@@ -39,7 +39,7 @@
 
     <!-- 分身投票 -->
     <div v-if="report.persona_results?.length" class="section">
-      <div class="section-title">分身会商</div>
+      <div class="section-title">分身会商（点击行展开查看各分身的分析意见）</div>
       <PersonaVoteTable :votes="report.persona_results" />
     </div>
 

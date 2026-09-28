@@ -40,7 +40,9 @@ export interface SceneResult {
 
 export interface PersonaVote {
   persona_id?: number
-  persona_name: string
+  persona_name?: string
+  /** 后端 pipeline 中实际返回的字段名 */
+  name?: string
   risk_preference?: string
   weight: number
   p?: number

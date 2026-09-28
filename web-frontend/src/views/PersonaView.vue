@@ -60,15 +60,23 @@
             >
               <el-icon><RefreshLeft /></el-icon>&nbsp;重置为默认
             </el-button>
-            <el-button
-              v-else
-              size="small"
-              type="danger"
-              text
-              @click="onDelete(p)"
-            >
-              <el-icon><Delete /></el-icon>&nbsp;删除
-            </el-button>
+            <template v-else>
+              <el-button
+                size="small"
+                text
+                @click="openEdit(p)"
+              >
+                <el-icon><Edit /></el-icon>&nbsp;编辑
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                text
+                @click="onDelete(p)"
+              >
+                <el-icon><Delete /></el-icon>&nbsp;删除
+              </el-button>
+            </template>
           </div>
         </el-card>
       </div>
@@ -102,6 +110,35 @@
         <el-button type="primary" :loading="creating" @click="onCreate">创建</el-button>
       </template>
     </el-dialog>
+
+    <!-- 编辑自定义分身 -->
+    <el-dialog v-model="editVisible" title="编辑分身" width="480px">
+      <el-form label-width="90px">
+        <el-form-item label="分身名称">
+          <el-input v-model="editForm.name" placeholder="分身名称" maxlength="20" />
+        </el-form-item>
+        <el-form-item label="风险偏好">
+          <el-select v-model="editForm.risk_preference" class="full-width">
+            <el-option label="激进（机会优先）" value="aggressive" />
+            <el-option label="中性（凯利数学）" value="neutral" />
+            <el-option label="保守（生存优先）" value="conservative" />
+            <el-option label="自定义（依据核心原则）" value="custom" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="核心原则">
+          <el-input
+            v-model="editForm.core_principle"
+            type="textarea"
+            :rows="4"
+            placeholder="描述该分身的决策原则"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editing" @click="onEditSave">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -118,6 +155,46 @@ const personaStore = usePersonaStore()
 const createVisible = ref(false)
 const creating = ref(false)
 const form = reactive({ name: '', risk_preference: 'neutral', core_principle: '' })
+
+// 编辑自定义分身
+const editVisible = ref(false)
+const editing = ref(false)
+const editTargetId = ref<number | null>(null)
+const editForm = reactive({ name: '', risk_preference: 'neutral', core_principle: '' })
+
+function openEdit(p: Persona) {
+  editTargetId.value = p.id
+  editForm.name = p.name
+  editForm.risk_preference = p.risk_preference
+  editForm.core_principle = p.core_principle || ''
+  editVisible.value = true
+}
+
+async function onEditSave() {
+  if (editTargetId.value === null) return
+  if (!editForm.name.trim()) {
+    ElMessage.warning('请输入分身名称')
+    return
+  }
+  if (editForm.risk_preference === 'custom' && !editForm.core_principle.trim()) {
+    ElMessage.warning('风险偏好为「自定义」时必须填写核心原则')
+    return
+  }
+  editing.value = true
+  try {
+    await personaStore.update(editTargetId.value, {
+      name: editForm.name.trim(),
+      risk_preference: editForm.risk_preference,
+      core_principle: editForm.core_principle.trim(),
+    })
+    ElMessage.success('分身已更新')
+    editVisible.value = false
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    editing.value = false
+  }
+}
 
 onMounted(async () => {
   if (!personaStore.personas.length) await personaStore.loadPersonas()
