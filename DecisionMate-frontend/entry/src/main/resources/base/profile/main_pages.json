@@ -1,0 +1,8 @@
+{
+  "src": [
+    "pages/InputPage",
+    "pages/ResultPage",
+    "pages/SettingsPage",
+    "pages/PersonaPage"
+  ]
+}

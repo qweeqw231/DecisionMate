@@ -1,0 +1,28 @@
+# 密钥与本地配置
+.env
+*.local
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 数据与向量库（运行时产物）
+*.db
+*.db-*
+chroma_db/
+
+# 前端构建产物与依赖
+node_modules/
+web-frontend/dist/
+decision-backend/decision-backend/static/
+
+# 鸿蒙构建产物
+**/oh_modules/
+**/build/
+**/.hvigor/
+**/.preview/
+
+# IDE / 工具
+.vscode/
+.trae/
