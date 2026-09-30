@@ -17,6 +17,8 @@
 ```
 web-frontend/          # Vue 3 + TypeScript + Pinia + Element Plus（当前主力前端）
 decision-backend/      # FastAPI + SQLite(WAL) + ChromaDB + DeepSeek API
+launcher/              # 桌面快捷方式启动器（点击即用，关闭页面自动停止）
+test-harness/          # 附属测试程序：场景生成 / 批量跑测 / 人工复核台
 DecisionMate-frontend/ # 鸿蒙 ArkTS 前端（已停更，仅作历史参考）
 个人决策支持系统文档/    # Phase 1~4 需求文档与验收记录
 ```
@@ -36,7 +38,16 @@ DecisionMate-frontend/ # 鸿蒙 ArkTS 前端（已停更，仅作历史参考）
 
 ## 快速开始
 
-### 后端
+### 桌面快捷方式（推荐日常使用）
+
+运行 `launcher/install_shortcuts.ps1` 在桌面创建两个快捷方式（点击即用，用完即停，不常驻内存）：
+
+- **DecisionMate（主程序）**：启动后端并由其同源托管前端静态文件（单进程，无需再单独启动前端 dev server），自动打开浏览器；**关闭浏览器页面约 10 秒后自动停止服务**。控制台窗口会打印局域网地址（手机/平板可用）；关闭控制台窗口或 Ctrl+C 可立即停止。
+- **DecisionMate 测试台**：启动测试复核台（8020），同样关闭页面自动停止。
+
+自动停止基于页面心跳（主程序端口 8011 / 测试台 8021，脚本已内嵌在页面中）；不用快捷方式而手动启动服务时，心跳脚本无副作用。
+
+### 后端（手动启动，开发/调试用）
 
 ```powershell
 cd decision-backend/decision-backend
@@ -60,6 +71,15 @@ npm run dev    # http://localhost:5173，/api 自动代理到 127.0.0.1:8000
 
 - **方式一（推荐）：同源托管**。`npm run build` 后把 `dist/` 内容复制到后端 `static/` 目录，重启后端。局域网设备访问 `http://<后端IP>:8000` 即可，后端换 IP 前端零配置，且同源零 CORS。
 - **方式二：独立部署**。构建产物部署到任意静态服务器，在前端「设置」页填写后端地址（如 `http://192.168.1.100:8000`），地址持久化在浏览器 localStorage，可随时修改。
+
+### 附属测试程序（test-harness）
+
+```powershell
+cd test-harness
+python scenario_generator.py   # 批量生成决策测试场景（按类别，可用 --limit 试跑）
+python batch_runner.py         # 批量喂给隔离后端实例跑测（自动复制数据库副本，不触碰真实数据）
+python review_app.py           # 复核台（8020），或使用桌面「DecisionMate 测试台」快捷方式
+```
 
 ## 技术栈
 

@@ -224,5 +224,21 @@ fGo.onclick = loadList;
 fQ.addEventListener('keydown', e => { if (e.key==='Enter') loadList(); });
 loadStats(); loadList();
 </script>
+<!-- DecisionMate 启动器心跳：关闭页面后自动停止复核台（非快捷方式启动时无副作用） -->
+<script>
+  (function () {
+    var HB = 'http://127.0.0.1:8021/beat';
+    var BYE = 'http://127.0.0.1:8021/bye';
+    function send(u) {
+      try {
+        if (navigator.sendBeacon) { navigator.sendBeacon(u, '1'); return; }
+        fetch(u, { method: 'POST', keepalive: true, body: '1' }).catch(function () {});
+      } catch (e) {}
+    }
+    send(HB);
+    setInterval(function () { send(HB); }, 8000);
+    window.addEventListener('pagehide', function () { send(BYE); });
+  })();
+</script>
 </body>
 </html>
