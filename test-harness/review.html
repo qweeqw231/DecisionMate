@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>DecisionMate 测试复核台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", sans-serif; background: #f4f5f7; color: #222; height: 100vh; display: flex; flex-direction: column; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; }
+  .stat { font-size: 12px; background: #374151; padding: 3px 10px; border-radius: 12px; }
+  .filters { background: #fff; padding: 8px 16px; display: flex; gap: 10px; border-bottom: 1px solid #e5e7eb; flex-wrap: wrap; align-items: center; }
+  .filters select, .filters input { padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+  main { flex: 1; display: flex; overflow: hidden; }
+  #list { width: 42%; overflow-y: auto; border-right: 1px solid #e5e7eb; background: #fff; }
+  .item { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 13px; }
+  .item:hover { background: #f9fafb; }
+  .item.active { background: #e0ecff; border-left: 3px solid #2563eb; }
+  .item .meta { margin-top: 4px; font-size: 11px; color: #6b7280; display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag { padding: 1px 7px; border-radius: 10px; font-size: 11px; }
+  .tag.cat { background: #e5e7eb; }
+  .tag.fast { background: #d1fae5; color: #065f46; }
+  .tag.slow { background: #dbeafe; color: #1e40af; }
+  .tag.mismatch { background: #fee2e2; color: #b91c1c; }
+  .tag.pending { background: #f3f4f6; color: #6b7280; }
+  .tag.good { background: #d1fae5; color: #065f46; }
+  .tag.bad { background: #fee2e2; color: #b91c1c; }
+  .tag.doubt { background: #fef3c7; color: #92400e; }
+  #detail { flex: 1; overflow-y: auto; padding: 18px 22px; }
+  #detail h2 { font-size: 15px; margin-bottom: 8px; }
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h3 { font-size: 13px; color: #374151; margin-bottom: 8px; border-bottom: 1px solid #f0f0f0; padding-bottom: 6px; }
+  .kv { font-size: 13px; line-height: 1.9; }
+  .kv b { color: #374151; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid #e5e7eb; padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .reasoning { max-width: 320px; white-space: pre-wrap; }
+  .review-btns { display: flex; gap: 8px; margin: 8px 0; }
+  .review-btns button { padding: 7px 18px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .btn-good { background: #10b981; color: #fff; }
+  .btn-bad { background: #ef4444; color: #fff; }
+  .btn-doubt { background: #f59e0b; color: #fff; }
+  .btn-pending { background: #9ca3af; color: #fff; }
+  #comment { width: 100%; min-height: 60px; border: 1px solid #d1d5db; border-radius: 6px; padding: 8px; font-size: 13px; font-family: inherit; }
+  #saveBtn { margin-top: 8px; padding: 8px 24px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+  .empty { color: #9ca3af; text-align: center; margin-top: 60px; }
+  pre { background: #f9fafb; padding: 10px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DecisionMate 测试复核台</h1>
+  <span class="stat" id="stTotal">-</span>
+  <span class="stat" id="stRan">-</span>
+  <span class="stat" id="stReview">-</span>
+  <span class="stat" id="stMismatch">-</span>
+  <span class="stat" id="stLat">-</span>
+</header>
+<div class="filters">
+  <select id="fCat"><option value="">全部类别</option></select>
+  <select id="fStatus">
+    <option value="">全部复核状态</option>
+    <option value="pending">待复核</option>
+    <option value="good">好</option>
+    <option value="bad">差</option>
+    <option value="doubt">存疑</option>
+  </select>
+  <label style="font-size:13px"><input type="checkbox" id="fMismatch"> 只看回路不符</label>
+  <input id="fQ" placeholder="搜索场景文本..." style="flex:1;min-width:160px">
+  <button id="fGo" style="padding:5px 16px">筛选</button>
+</div>
+<main>
+  <div id="list"></div>
+  <div id="detail"><div class="empty">← 点击左侧场景查看报告并复核</div></div>
+</main>
+
+<script>
+let currentId = null, currentStatus = null;
+
+const CAT_NAMES = {high_odds_bet:'高赔率重注',low_odds_short:'低赔率做空',advantage_calibration:'优势动态校准',
+  zoh_waiting:'ZOH等待',strategic_rest:'战略性休整',exam_complex:'考试复合体',fast_trivial:'快回路琐事',ethics_shutdown:'伦理关机'};
+const STATUS_NAMES = {pending:'待复核',good:'好',bad:'差',doubt:'存疑'};
+
+async function loadStats() {
+  const s = await (await fetch('/api/stats')).json();
+  stTotal.textContent = `场景 ${s.total}`;
+  stRan.textContent = `已跑 ${s.ran}`;
+  const rv = s.review||{};
+  stReview.textContent = `复核 好${rv.good||0}/差${rv.bad||0}/疑${rv.doubt||0}/待${rv.pending||0}`;
+  stMismatch.textContent = `回路不符 ${s.loop_mismatch}`;
+  stLat.textContent = `均耗时 ${s.avg_latency_ms}ms`;
+  const sel = fCat;
+  if (sel.options.length <= 1) {
+    (s.by_category||[]).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.category; o.textContent = `${CAT_NAMES[c.category]||c.category} (${c.c})`;
+      sel.appendChild(o);
+    });
+  }
+}
+
+async function loadList() {
+  const p = new URLSearchParams();
+  if (fCat.value) p.set('category', fCat.value);
+  if (fStatus.value) p.set('review_status', fStatus.value);
+  if (fMismatch.checked) p.set('loop_mismatch', 'true');
+  if (fQ.value.trim()) p.set('q', fQ.value.trim());
+  const rows = await (await fetch('/api/scenarios?'+p)).json();
+  list.innerHTML = '';
+  rows.forEach(r => {
+    const d = document.createElement('div');
+    d.className = 'item' + (r.id===currentId?' active':'');
+    const loopTag = r.run_loop_type
+      ? `<span class="tag ${r.run_loop_type}">${r.run_loop_type}</span>` +
+        (r.run_loop_type!==r.expected_loop ? `<span class="tag mismatch">回路不符</span>` : '')
+      : '<span class="tag pending">未跑</span>';
+    d.innerHTML = `<div>#${r.id} ${esc(r.scenario_text.slice(0,60))}${r.scenario_text.length>60?'…':''}</div>
+      <div class="meta">
+        <span class="tag cat">${CAT_NAMES[r.category]||r.category}</span>
+        ${loopTag}
+        <span class="tag ${r.review_status}">${STATUS_NAMES[r.review_status]}</span>
+        ${r.latency_ms?`<span>${r.latency_ms}ms</span>`:''}
+      </div>`;
+    d.onclick = () => loadDetail(r.id);
+    list.appendChild(d);
+  });
+  if (!rows.length) list.innerHTML = '<div class="empty">无匹配场景</div>';
+}
+
+async function loadDetail(id) {
+  currentId = id;
+  const d = await (await fetch(`/api/scenarios/${id}`)).json();
+  currentStatus = d.review_status;
+  document.querySelectorAll('.item').forEach(el => el.classList.remove('active'));
+  loadListNoReset();
+  detail.innerHTML = renderDetail(d);
+}
+
+async function loadListNoReset() { /* 保持简单：不重绘列表，active 态下次筛选时恢复 */ }
+
+function renderDetail(d) {
+  let html = `<h2>#${d.id} [${CAT_NAMES[d.category]||d.category}] ${d.subcategory||''}</h2>`;
+  html += `<div class="card"><h3>场景文本（预期回路：${d.expected_loop}）</h3><div class="kv">${esc(d.scenario_text)}</div></div>`;
+  if (d.run && d.run.error) {
+    html += `<div class="card"><h3>运行错误</h3><pre>${esc(d.run.error)}</pre></div>`;
+  } else if (d.report) {
+    html += renderReport(d.report, d.run);
+  } else {
+    html += `<div class="card">尚未跑测</div>`;
+  }
+  html += `<div class="card"><h3>人工复核</h3>
+    <div class="review-btns">
+      <button class="btn-good" onclick="setStatus('good')">好</button>
+      <button class="btn-bad" onclick="setStatus('bad')">差</button>
+      <button class="btn-doubt" onclick="setStatus('doubt')">存疑</button>
+      <button class="btn-pending" onclick="setStatus('pending')">重置为待复核</button>
+    </div>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:6px">当前状态：${STATUS_NAMES[d.review_status]}</div>
+    <textarea id="comment" placeholder="评语（可选）：报告哪里好/哪里有问题...">${esc(d.review_comment||'')}</textarea>
+    <br><button id="saveBtn" onclick="saveReview()">保存复核结果</button>
+    <span id="saveMsg" style="font-size:12px;color:#10b981;margin-left:8px"></span>
+  </div>`;
+  return html;
+}
+
+function renderReport(r, run) {
+  let html = `<div class="card"><h3>系统报告（${r.loop_type}回路 · ${run.latency_ms}ms）</h3>`;
+  if (r.loop_type === 'fast') {
+    html += `<div class="kv"><b>建议：</b>${esc(r.recommendation||'')}</div>
+             <div class="kv"><b>说明：</b>${esc(r.note||'')}</div></div>`;
+    return html;
+  }
+  html += `<div class="kv">
+    <b>f*：</b>${fmt(r.f_star)}　<b>风险等级：</b>${esc(r.risk_level||'')}　
+    <b>场景类型：</b>${esc(r.scenario_type||'')}　<b>分身分歧：</b>${r.conflict_detected?'是':'否'}</div>
+    <div class="kv"><b>最终建议：</b>${esc(r.recommendation||'')}</div>
+    <div class="kv"><b>量化观点：</b>${esc(r.quant_opinion||'')}</div>
+    <div class="kv"><b>风险观点：</b>${esc(r.risk_opinion||'')}</div>
+    ${r.calculation_detail?`<div class="kv"><b>计算过程：</b><pre>${esc(r.calculation_detail)}</pre></div>`:''}
+  </div>`;
+  if (r.persona_results && r.persona_results.length) {
+    html += `<div class="card"><h3>分身投票（${r.persona_results.length}个）</h3><table>
+      <tr><th>分身</th><th>偏好</th><th>权重</th><th>p</th><th>q</th><th>b</th><th>f*</th><th>推理</th></tr>`;
+    r.persona_results.forEach(p => {
+      html += `<tr><td>${esc(p.name)}</td><td>${esc(p.risk_preference)}</td><td>${fmt(p.weight)}</td>
+        <td>${fmt(p.p)}</td><td>${fmt(p.q)}</td><td>${fmt(p.b)}</td><td>${fmt(p.f_star)}</td>
+        <td class="reasoning">${esc(p.reasoning||'')}</td></tr>`;
+    });
+    html += `</table></div>`;
+  }
+  if (r.scene_result && r.scene_result.scene_recognized) {
+    const sr = r.scene_result;
+    html += `<div class="card"><h3>场景策略（${esc(sr.scene_type)} / ${esc(sr.complex_type)}）</h3>
+      <div class="kv"><b>时间线：</b>${esc(sr.timeline_summary||'')}</div><table>
+      <tr><th>阶段</th><th>时间范围</th><th>策略</th><th>建议</th><th>参考</th></tr>`;
+    (sr.strategies||[]).forEach(s => {
+      html += `<tr><td>${esc(s.phase)}</td><td>${esc(s.date_range)}</td><td>${esc(s.strategy_name)}</td>
+        <td>${esc(s.suggestion)}</td><td>${esc(s.reference)}</td></tr>`;
+    });
+    html += `</table></div>`;
+  }
+  return html;
+}
+
+function setStatus(s) { currentStatus = s;
+  document.querySelectorAll('.review-btns button').forEach(b => b.style.outline = '');
+  saveMsg.textContent = `已选「${STATUS_NAMES[s]}」，记得点保存`;
+}
+async function saveReview() {
+  if (!currentId || !currentStatus) { saveMsg.textContent = '请先选择 好/差/存疑'; return; }
+  const res = await fetch(`/api/scenarios/${currentId}/review`, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({status: currentStatus, comment: comment.value})
+  });
+  if (res.ok) { saveMsg.textContent = '已保存 ✓'; loadStats(); }
+  else saveMsg.textContent = '保存失败';
+}
+
+function esc(s) { return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmt(v) { return typeof v==='number' ? (Math.abs(v)<10?v.toFixed(3):v.toFixed(1)) : esc(v); }
+
+fGo.onclick = loadList;
+fQ.addEventListener('keydown', e => { if (e.key==='Enter') loadList(); });
+loadStats(); loadList();
+</script>
+</body>
+</html>

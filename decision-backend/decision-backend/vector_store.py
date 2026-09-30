@@ -39,7 +39,11 @@ _profile_collection: Any = None
 def _get_chroma_client() -> Any:
     global _chroma_client
     if _chroma_client is None:
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db")
+        # 默认 chroma_db；测试实例可通过 CHROMA_DB_PATH 指向隔离目录，避免污染真实向量库
+        db_path = os.getenv(
+            "CHROMA_DB_PATH",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db")
+        )
         _chroma_client = chromadb.PersistentClient(path=db_path, settings=Settings(anonymized_telemetry=False))
     return _chroma_client
 

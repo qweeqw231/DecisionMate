@@ -13,8 +13,11 @@ import os
 from datetime import datetime
 from typing import List, Optional
 
-# 数据库文件路径
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decision.db")
+# 数据库文件路径（默认 decision.db；测试实例可通过 DECISION_DB_PATH 指向隔离副本）
+DB_PATH = os.getenv(
+    "DECISION_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "decision.db")
+)
 
 
 def _get_connection() -> sqlite3.Connection:

@@ -11,6 +11,7 @@ __pycache__/
 *.db
 *.db-*
 chroma_db/
+test-harness/runtime/
 
 # 前端构建产物与依赖
 node_modules/
