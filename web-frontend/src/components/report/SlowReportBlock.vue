@@ -10,7 +10,7 @@
         effect="light"
         class="conflict-tag"
       >
-        分身意见存在分歧
+        存在冲突，请审阅
       </el-tag>
       <div class="recommendation">{{ report.recommendation }}</div>
     </div>

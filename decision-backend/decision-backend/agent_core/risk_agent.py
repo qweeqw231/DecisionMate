@@ -6,10 +6,11 @@
 输入包含量化分析Agent的输出，作为风险评估的参考。
 """
 
-import json
-import re
+import logging
+
 from models.schemas import RiskResult, QuantResult
 from agent_core.ai_client import chat
+from agent_core.json_utils import extract_json_object, as_bool
 
 RISK_SYSTEM_PROMPT = """你是一个风险监控专家。你的任务是根据用户的决策场景和量化分析结果，评估其中的风险。
 
@@ -65,6 +66,30 @@ RISK_SYSTEM_PROMPT = """你是一个风险监控专家。你的任务是根据�
 risk_level 只能是 "低"、"中"、"高" 之一。
 """
 
+VALID_RISK_LEVELS = ("低", "中", "高")
+
+# AI 输出必须包含的决策字段；缺任何一个都视为不可信，按保守降级处理
+REQUIRED_FIELDS = ("risk_level", "bankruptcy_risk", "overload_signal", "zoh_recommend")
+
+
+def _degraded_result(reason: str) -> RiskResult:
+    """
+    解析失败时的保守兜底结果（fail-safe）。
+
+    宁可误报风险，也不能在守护者失明时宣布「一切安全」。
+    """
+    return RiskResult(
+        risk_level="高",
+        bankruptcy_risk=True,
+        overload_signal=False,
+        zoh_recommend=False,
+        degraded=True,
+        suggestion=(
+            "⚠️ 风险评估未能正确解析，已按「生存优先」原则降级为保守结果："
+            "本次不建议重注，请人工复核后再决定。\n" + reason
+        ),
+    )
+
 
 def assess(scenario: str, quant_result: QuantResult) -> RiskResult:
     """
@@ -90,27 +115,35 @@ def assess(scenario: str, quant_result: QuantResult) -> RiskResult:
         max_tokens=1024
     )
 
-    # 尝试从回复中提取JSON
+    # 解析 AI 输出。
+    # 安全关键：任何异常或字段缺失都必须倒向「保守」，而不是「无风险」。
+    # 旧实现失败时返回 risk_level="低" / bankruptcy_risk=False（fail-open），
+    # 相当于在守护者失明时宣布「一切安全」，与架构的「生存优先硬约束」相反。
     try:
-        clean_text = response_text.strip()
-        if clean_text.startswith("```"):
-            clean_text = re.sub(r'^```(?:json)?\s*', '', clean_text)
-            clean_text = re.sub(r'\s*```$', '', clean_text)
-
-        data = json.loads(clean_text)
-
-        return RiskResult(
-            risk_level=str(data["risk_level"]),
-            bankruptcy_risk=bool(data["bankruptcy_risk"]),
-            overload_signal=bool(data["overload_signal"]),
-            zoh_recommend=bool(data["zoh_recommend"]),
-            suggestion=str(data["suggestion"])
+        data = extract_json_object(response_text)
+    except Exception as e:  # noqa: BLE001 —— 解析异常不得向上抛
+        logging.warning("[风险Agent] 输出无法解析，已降级为保守结果：%s", e)
+        return _degraded_result(
+            f"解析错误：{e}\nAI 原始输出片段：{str(response_text)[:200]!r}"
         )
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        return RiskResult(
-            risk_level="低",
-            bankruptcy_risk=False,
-            overload_signal=False,
-            zoh_recommend=False,
-            suggestion=f"AI风险评估未能正确解析。\n错误: {str(e)}\n默认风险等级：低"
-        )
+
+    # 输出必须包含完整决策字段；缺字段说明模型没有遵守约定，结果同样不可信
+    missing = [key for key in REQUIRED_FIELDS if key not in data]
+    if missing:
+        logging.warning("[风险Agent] 输出缺少必需字段 %s，已降级为保守结果", missing)
+        return _degraded_result(f"AI 输出缺少必需字段：{missing}")
+
+    raw_level = data.get("risk_level")
+    risk_level = str(raw_level).strip() if raw_level else "高"
+    if risk_level not in VALID_RISK_LEVELS:
+        logging.warning("[风险Agent] 非法 risk_level=%r，按保守处理为「高」", risk_level)
+        risk_level = "高"
+
+    return RiskResult(
+        risk_level=risk_level,
+        # 无法识别时默认 True（倒向保守），且不再因为字符串 "false" 非空而误判为 True
+        bankruptcy_risk=as_bool(data.get("bankruptcy_risk"), default=True),
+        overload_signal=as_bool(data.get("overload_signal"), default=False),
+        zoh_recommend=as_bool(data.get("zoh_recommend"), default=False),
+        suggestion=str(data.get("suggestion") or "")
+    )

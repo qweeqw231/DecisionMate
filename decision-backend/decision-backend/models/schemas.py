@@ -25,6 +25,8 @@ class RiskResult(BaseModel):
     overload_signal: bool
     zoh_recommend: bool
     suggestion: str
+    # P0 修复：AI 输出解析失败时置 True，表示本结果由保守降级产生，而非真实评估
+    degraded: bool = False
 
 
 class StrategyItem(BaseModel):
@@ -141,9 +143,11 @@ class ArchiveReport(BaseModel):
     initial_f_star: float       # 初始f*
     feedback_type: str          # 用户反馈类型
     deviation_analysis: str     # 偏差分析文字
-    factor_updates: dict        # 能力因子变化，如 {"考试备战能力": {"old": 0.85, "new": 0.88}}
+    factor_updates: dict        # 能力因子变化（仅含实际写入的项），如 {"考试备战能力": {"old": 0.85, "new": 0.88}}
     new_factor_proposal: Optional[NewFactorProposal] = None
     reusable_pattern: Optional[str] = None  # 可复用模式提取
+    # P0 修复：能力因子写入守卫的拒绝/钳制记录，便于排查「AI 提议了但没生效」的原因
+    guard_rejections: List[str] = []
 
 
 # ==========================================

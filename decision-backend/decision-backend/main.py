@@ -34,13 +34,16 @@ from storage import (
     add_message, get_messages,
     add_decision_record, get_decision_record, update_feedback, _get_connection,  # Phase 3.3 新增
     get_personas, get_persona, create_persona, update_persona, delete_persona, reset_preset_persona,
-    get_conversation_personas,save_conversation_personas
+    get_conversation_personas,save_conversation_personas,
+    get_decision_ids_for_conversation, get_all_decision_ids,  # P0 新增：向量库同步清理
 )
 from vector_store import (
     store_decision_vector, search_similar_decisions,
-    init_user_profile, get_user_profile, add_profile_factor
+    init_user_profile, get_user_profile, add_profile_factor,
+    delete_decision_vectors,  # P0 新增
 )
 from agent_core.archive_agent import run_archive
+from factor_guard import validate_new_factor
 
 
 app = FastAPI(
@@ -215,13 +218,34 @@ async def startup():
         "技术速通能力": 0.88,
         "技术速通能力_updated_at": now,
         "技术速通能力_basis": "多科目速通验证",
-        "风险偏好": "偏激进",
+        "风险偏好": 0.85,
         "风险偏好_updated_at": now,
-        "风险偏好_basis": "多次选择高赔率重注"
+        "风险偏好_basis": "多次选择高赔率重注（0.85 ≈ 偏激进）"
     }
     init_user_profile(initial_profile)
     print("数据库初始化完成")
     print("=== 版本标识: 2026-05-30-01 ===", flush=True)  # 新增这一行
+
+
+# -------- P0 新增：向量库同步清理 --------
+
+def _purge_decision_vectors(decision_ids) -> int:
+    """
+    删除决策记录时同步清理其向量指纹（尽力而为，绝不影响删除本身）。
+
+    原先删除对话/清空数据只清 SQLite，Chroma 中的向量会变成孤儿，
+    却仍会被 search_similar_decisions 检索出来当作「历史参考」注入 Prompt。
+    """
+    if not decision_ids:
+        return 0
+    try:
+        removed = delete_decision_vectors(decision_ids)
+        if removed:
+            logging.info(f"[向量清理] 已删除 {removed} 条向量（对应 {len(decision_ids)} 条决策记录）")
+        return removed
+    except Exception as e:
+        logging.warning(f"[向量清理] 失败（不影响删除操作）：{e}")
+        return 0
 
 
 # -------- 对话 CRUD --------
@@ -272,19 +296,23 @@ async def api_toggle_pin(conv_id: int):
 
 @app.delete("/api/conversations/{conv_id}")
 async def api_delete_conversation(conv_id: int):
-    """删除单个对话"""
+    """删除单个对话（P0 修复：同步清理向量库，避免产生孤儿向量）"""
     conv = get_conversation(conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
 
+    decision_ids = get_decision_ids_for_conversation(conv_id)
     delete_conversation(conv_id)
+    _purge_decision_vectors(decision_ids)
     return {"status": "ok", "message": "对话已删除"}
 
 
 @app.delete("/api/conversations")
 async def api_clear_all_conversations():
-    """清空所有对话"""
+    """清空所有对话（P0 修复：同步清理向量库）"""
+    decision_ids = get_all_decision_ids()
     clear_all_conversations()
+    _purge_decision_vectors(decision_ids)
     return {"status": "ok", "message": "所有对话已清空"}
 
 
@@ -384,8 +412,14 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             }
         else:
             # 2. 检索历史相似决策（仅一次）
+            # P0 修复：检索只是增强项。search_similar_decisions 内部已降级，
+            # 这里再兜一层，确保任何异常都不会让整次决策失败。
             yield "stage", {"stage": "personas", "names": [p["name"] for p in all_personas]}
-            similar = await asyncio.to_thread(search_similar_decisions, body.scenario, 3, 0.5)
+            try:
+                similar = await asyncio.to_thread(search_similar_decisions, body.scenario, 3, 0.5)
+            except Exception as e:
+                logging.warning(f"[向量检索] 调用异常，已降级为「无历史参考」：{e}")
+                similar = []
             history_context = ""
             if similar:
                 history_context = "【历史参考】以下是与当前场景相似的过往决策记录，供参数估算参考：\n"
@@ -421,6 +455,7 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             quant_results = await asyncio.gather(*tasks)
 
             # 6. 整理各分身结果
+            # P0 修复：补上 scenario_type（原先缺这个键，导致下游恒取到空字符串）
             persona_results = []
             for persona, qr in zip(all_personas, quant_results):
                 persona_results.append({
@@ -432,15 +467,20 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
                     "q": qr.q,
                     "b": qr.b,
                     "f_star": qr.f_star,
+                    "scenario_type": qr.scenario_type,
                     "reasoning": qr.reasoning
                 })
 
             # 7. 风险 Agent 和场景 Agent（使用中性分身的结果，若找不到则用第一个）
             yield "stage", {"stage": "risk"}
             neutral_result = next((r for r in persona_results if r.get("risk_preference") == "neutral"), persona_results[0])
+            # P0 修复：原先把 scenario_type / reasoning 清空后交给风险 Agent，等于让它
+            # 在丢失上下文的情况下评估风险；现在透传中性分身的真实识别结果。
             neutral_quant = QuantResult(
                 p=neutral_result["p"], q=neutral_result["q"], b=neutral_result["b"],
-                f_star=neutral_result["f_star"], scenario_type="", reasoning=""
+                f_star=neutral_result["f_star"],
+                scenario_type=neutral_result.get("scenario_type", ""),
+                reasoning=neutral_result.get("reasoning", "")
             )
             risk_result = await asyncio.to_thread(assess, body.scenario, neutral_quant)
             yield "stage", {"stage": "scene"}
@@ -462,20 +502,22 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             weighted_b = sum(r["b"] * r["weight"] for r in persona_results)
 
             # 9. 生成多分身会商报告
+            # P0 修复：传入完整的 risk_result（原先只传 risk_level，丢掉了
+            # bankruptcy_risk 与 suggestion，使「生存优先硬约束」在主链路失效）
             yield "stage", {"stage": "merge"}
             from agent_core.persona_mux import merge_personas
             report = await asyncio.to_thread(
                 merge_personas,
                 persona_results=persona_results,
                 weighted_f_star=weighted_f_star,
-                risk_level=risk_result.risk_level,
+                risk_result=risk_result,
                 scenario_type=neutral_result.get("scenario_type", ""),
                 scene_result=scene_result
             )
             report.loop_type = "slow"
             record_params = {
                 "p": weighted_p, "q": weighted_q, "b": weighted_b,
-                "f_star": weighted_f_star, "scenario_type": report.scenario_type
+                "f_star": report.f_star, "scenario_type": report.scenario_type
             }
 
     # 3. 存储系统消息（完整报告 JSON），直接拿到真实 msg_id
@@ -496,13 +538,8 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
         if decision_id > 0:
             import threading
             def vector_tasks():
-                try:
-                    similar = search_similar_decisions(body.scenario, top_k=5, threshold=0.7)
-                    if similar:
-                        logging.info(f"[向量检索] 找到 {len(similar)} 条相似记录")
-                except Exception as e:
-                    logging.error(f"[向量检索失败] {e}")
-
+                # P0 清理：原先这里先做一次 search_similar_decisions 并只把结果写日志，
+                # 每轮决策白白多花一次 Embedding 调用，且结果无人使用，已移除。
                 try:
                     store_decision_vector(
                         decision_id=decision_id,
@@ -646,9 +683,17 @@ async def api_get_profile():
 
 @app.post("/api/user-profile/add-factor")
 async def api_add_factor(factor_name: str, value: float, basis: str):
-    """用户确认后添加新因子"""
-    add_profile_factor(factor_name, value, basis)
-    return {"status": "ok", "factor_name": factor_name}
+    """
+    用户确认后添加新因子。
+
+    P0 修复：名称与取值范围经 validate_new_factor 校验，非法输入返回 400 而不是 500，
+    并且会被钳制到 [0, 1]，避免写入越界值污染后续 Prompt。
+    """
+    try:
+        name, safe_value = add_profile_factor(factor_name, value, basis)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok", "factor_name": name, "value": safe_value}
 
 
 # ==========================================

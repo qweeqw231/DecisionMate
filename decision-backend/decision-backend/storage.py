@@ -371,6 +371,30 @@ def update_decision_message_id(decision_id: int, message_id: int):
     conn.commit()
     conn.close()
 
+
+# ==========================================
+# P0 修复：向量库存量清理所需的 ID 查询
+# 删除对话/清空数据时必须先取出决策ID，否则 Chroma 中的向量会变成孤儿，
+# 却仍被 search_similar_decisions 检索出来当作「历史参考」注入 Prompt。
+# ==========================================
+
+def get_decision_ids_for_conversation(conv_id: int) -> List[int]:
+    """获取某个对话下所有决策记录的 ID"""
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT id FROM decision_records WHERE conversation_id = ?", (conv_id,)
+    ).fetchall()
+    conn.close()
+    return [row["id"] for row in rows]
+
+
+def get_all_decision_ids() -> List[int]:
+    """获取全部决策记录的 ID"""
+    conn = _get_connection()
+    rows = conn.execute("SELECT id FROM decision_records").fetchall()
+    conn.close()
+    return [row["id"] for row in rows]
+
 # ==========================================
 # phase4.2 分身操作
 # ==========================================
