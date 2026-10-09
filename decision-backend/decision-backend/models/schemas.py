@@ -57,6 +57,22 @@ class PersonaVote(BaseModel):
     summary: str
 
 
+class HistoryReference(BaseModel):
+    """
+    P1 新增：本次决策检索到的历史相似决策。
+
+    后端一直会检索历史并把参数注入量化 Agent 的 Prompt，但结果从未回传，
+    前端无从展示——Phase 3.3 验收标准里的「历史参考」区域因此不可达。
+    这里把检索结果如实回传，让用户能看到系统到底参考了什么。
+    """
+    decision_id: int
+    similarity: float
+    scenario_type: Optional[str] = None
+    p: Optional[float] = None
+    b: Optional[float] = None
+    f_star: Optional[float] = None
+
+
 class DecisionReport(BaseModel):
     """Mux融合后的最终决策建议（慢回路）"""
     loop_type: str = "slow"        # 新增：标识回路类型
@@ -73,6 +89,8 @@ class DecisionReport(BaseModel):
     # P0 新增：风险 Agent 输出不可信（解析失败/字段缺失/非法取值）时置 True，
     # 供前端区分「真实的清零风险」与「风险校验降级」，避免把降级当成真实评估
     risk_degraded: bool = False
+    # P1 新增：本次检索到的历史相似决策（Phase 3.3 的「历史参考」展示）
+    history_references: Optional[List[HistoryReference]] = None
 
 
 class FastDecisionReport(BaseModel):

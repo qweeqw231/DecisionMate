@@ -7,7 +7,52 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests import support  # noqa: F401
 
-from agent_core.json_utils import LLMParseError, as_bool, extract_json_object  # noqa: E402
+from agent_core.json_utils import (  # noqa: E402
+    LLMParseError, as_bool, extract_json_object, strip_trailing_commas,
+)
+
+
+class TestTrailingCommaTolerance(unittest.TestCase):
+    """
+    实测事故：快回路模型返回末尾带多余逗号的 JSON，
+    json.loads 直接失败，于是整段原始 JSON 被当成「建议正文」渲染给用户。
+    """
+
+    def test_object_with_trailing_comma(self):
+        raw = '{\n  "recommendation": "当场制止",\n  "reasoning": "成本低",\n}'
+        self.assertEqual(extract_json_object(raw),
+                         {"recommendation": "当场制止", "reasoning": "成本低"})
+
+    def test_nested_array_trailing_comma(self):
+        raw = '{"items": [1, 2, 3,], "ok": true}'
+        self.assertEqual(extract_json_object(raw), {"items": [1, 2, 3], "ok": True})
+
+    def test_trailing_comma_inside_a_string_is_preserved(self):
+        """字符串里的「,}」不能被当成多余逗号删掉。"""
+        raw = '{"text": "a,}b", "n": 1,}'
+        self.assertEqual(extract_json_object(raw), {"text": "a,}b", "n": 1})
+
+    def test_escaped_quote_does_not_confuse_the_scanner(self):
+        raw = '{"text": "他说\\"好，}\\"", "n": 1,}'
+        parsed = extract_json_object(raw)
+        self.assertEqual(parsed["n"], 1)
+        self.assertIn("好，}", parsed["text"])
+
+    def test_fenced_json_with_trailing_comma(self):
+        raw = '```json\n{"a": 1,}\n```'
+        self.assertEqual(extract_json_object(raw), {"a": 1})
+
+    def test_genuinely_broken_json_still_fails(self):
+        """修补只针对多余逗号，不能把真正的语法错误也放行。"""
+        with self.assertRaises(LLMParseError):
+            extract_json_object('{"a": 1 "b": 2}')
+
+    def test_strip_helper_is_a_noop_for_valid_json(self):
+        raw = '{"a": [1, 2], "b": {"c": 3}}'
+        self.assertEqual(strip_trailing_commas(raw), raw)
+
+    def test_strip_helper_handles_deep_nesting(self):
+        self.assertEqual(strip_trailing_commas('{"a": {"b": [1,],},}'), '{"a": {"b": [1]}}')
 
 
 class TestExtractJsonObject(unittest.TestCase):
@@ -45,8 +90,12 @@ class TestExtractJsonObject(unittest.TestCase):
                 extract_json_object(raw)
 
     def test_rejects_malformed_json(self):
+        # 注意：末尾多余逗号是被刻意容忍的（见 TestTrailingCommaTolerance），
+        # 这里用真正无法修补的语法错误。
         with self.assertRaises(LLMParseError):
-            extract_json_object('{"a": 1,}')
+            extract_json_object('{"a": 1 "b": 2}')
+        with self.assertRaises(LLMParseError):
+            extract_json_object('{"a": }')
 
     def test_parse_error_is_a_value_error(self):
         """调用方按 ValueError 统一捕获，必须保持这个继承关系。"""

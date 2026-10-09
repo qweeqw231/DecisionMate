@@ -7,6 +7,7 @@ Phase 3.2 实现，Phase 3.3 将接入向量数据库。
 数据库文件自动创建在项目根目录：decision.db
 """
 
+import re
 import sqlite3
 import json
 import os
@@ -147,15 +148,29 @@ def init_db():
 # 对话操作
 # ==========================================
 
+def next_default_conversation_title(conn) -> str:
+    """
+    生成不重复的默认对话标题「对话 #N」。
+
+    P1 修复：原实现用 COUNT(*)+1，删除过对话后编号会回退，导致出现两个
+    「对话 #7」（实测侧边栏确实重名）。改为取现有「对话 #N」标题里最大的 N 再 +1。
+    手动改成其他名字的对话不参与编号，因此不会阻挡编号前进。
+    """
+    max_index = 0
+    for row in conn.execute("SELECT title FROM conversations").fetchall():
+        match = re.match(r"^对话 #(\d+)$", row["title"] or "")
+        if match:
+            max_index = max(max_index, int(match.group(1)))
+    return f"对话 #{max_index + 1}"
+
+
 def create_conversation(title: Optional[str] = None) -> dict:
     """创建新对话，返回对话信息"""
     conn = _get_connection()
     now = datetime.now().isoformat()
 
     if not title:
-        # 自动生成标题：对话 #N
-        count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        title = f"对话 #{count + 1}"
+        title = next_default_conversation_title(conn)
 
     cursor = conn.execute(
         "INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)",

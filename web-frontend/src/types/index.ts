@@ -54,6 +54,15 @@ export interface PersonaVote {
 }
 
 // 慢回路报告（Mux 融合输出）
+export interface HistoryReference {
+  decision_id: number
+  similarity: number
+  scenario_type?: string | null
+  p?: number | null
+  b?: number | null
+  f_star?: number | null
+}
+
 export interface DecisionReport {
   loop_type: 'slow' | string
   recommendation: string
@@ -66,6 +75,10 @@ export interface DecisionReport {
   scene_result?: SceneResult | null
   persona_results?: PersonaVote[] | null
   conflict_detected?: boolean
+  /** 风险 Agent 输出不可信（解析失败/字段缺失/非法取值），结论由保守降级产生 */
+  risk_degraded?: boolean
+  /** 本次检索到的历史相似决策（此前只注入 Prompt，用户看不到） */
+  history_references?: HistoryReference[] | null
 }
 
 // 快回路报告
@@ -136,9 +149,17 @@ export interface ArchiveReport {
   initial_f_star: number
   feedback_type: string
   deviation_analysis: string
-  factor_updates: Record<string, { old: number; new: number }>
+  factor_updates: Record<string, { old: number | string; new: number }>
   new_factor_proposal?: NewFactorProposal | null
   reusable_pattern?: string | null
+  /** 因子写入守卫的钳制/拒绝记录：解释「模型提议了但没生效」 */
+  guard_rejections?: string[]
+}
+
+export interface AddFactorPayload {
+  factor_name: string
+  value: number
+  basis?: string
 }
 
 // SSE 阶段事件

@@ -20,11 +20,57 @@ class LLMParseError(ValueError):
     """LLM 输出无法解析为预期的 JSON 对象"""
 
 
+def strip_trailing_commas(text: str) -> str:
+    """
+    移除对象/数组末尾多余逗号（LLM 最常见的 JSON 瑕疵之一）。
+
+    实测事故：快回路模型返回
+        {"recommendation": "...", "reasoning": "...",}
+    结尾多一个逗号，json.loads 直接失败，于是整段原始 JSON 被当成
+    「建议正文」展示给用户（前端确实渲染出了一坨 JSON）。
+
+    只处理字符串外、且后面紧跟 } 或 ] 的逗号；字符串内部的逗号不受影响。
+    这是针对性修补，不是通用 JSON5 解析器。
+    """
+    out = []
+    in_string = False
+    escaped = False
+    i = 0
+    length = len(text)
+    while i < length:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < length and text[j] in " \t\r\n":
+                j += 1
+            if j < length and text[j] in "}]":
+                i += 1  # 丢弃这个多余逗号
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def extract_json_object(text: str | None) -> dict:
     """
     从 LLM 回复中提取第一个 JSON 对象。
 
-    容忍：Markdown 代码块包裹、JSON 前后的解释性文字、首尾空白。
+    容忍：Markdown 代码块包裹、JSON 前后的解释性文字、首尾空白、末尾多余逗号。
     失败时抛出 LLMParseError（是 ValueError 的子类，便于统一捕获）。
     """
     if text is None:
@@ -51,10 +97,22 @@ def extract_json_object(text: str | None) -> dict:
     if start == -1 or end == -1 or end <= start:
         raise LLMParseError(f"未找到 JSON 对象，原始输出片段：{text[:200]!r}")
 
+    candidate = body[start:end + 1]
     try:
-        parsed = json.loads(body[start:end + 1])
-    except json.JSONDecodeError as exc:
-        raise LLMParseError(f"JSON 解析失败：{exc}；原始输出片段：{text[:200]!r}") from exc
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as first_error:
+        # 只在第一次失败后做一次修补，避免掩盖真实语法错误
+        repaired = strip_trailing_commas(candidate)
+        if repaired == candidate:
+            raise LLMParseError(
+                f"JSON 解析失败：{first_error}；原始输出片段：{text[:200]!r}"
+            ) from first_error
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError as second_error:
+            raise LLMParseError(
+                f"JSON 解析失败：{second_error}；原始输出片段：{text[:200]!r}"
+            ) from second_error
 
     if not isinstance(parsed, dict):
         raise LLMParseError(f"JSON 顶层不是对象，而是 {type(parsed).__name__}")

@@ -98,5 +98,52 @@ class TestStorageBasics(unittest.TestCase):
         self.assertEqual(storage.get_decision_ids_for_conversation(conv["id"]), [])
 
 
+class TestDefaultConversationTitle(unittest.TestCase):
+    """P1 修复：默认标题原先用 COUNT(*)+1，删除对话后编号回退会产生重名。"""
+
+    @classmethod
+    def setUpClass(cls):
+        storage.init_db()
+
+    def setUp(self):
+        storage.clear_all_conversations()
+
+    def test_numbering_is_sequential(self):
+        self.assertEqual(storage.create_conversation()["title"], "对话 #1")
+        self.assertEqual(storage.create_conversation()["title"], "对话 #2")
+
+    def test_deleting_a_middle_conversation_does_not_cause_a_duplicate_title(self):
+        """
+        复现原 bug：用 COUNT(*)+1 时，建三条再删掉中间那条，
+        下一次创建又会得到「对话 #3」，与仍存在的第三条重名。
+        """
+        storage.create_conversation()                       # 对话 #1
+        second = storage.create_conversation()              # 对话 #2
+        third = storage.create_conversation()               # 对话 #3
+        storage.delete_conversation(second["id"])
+
+        fourth = storage.create_conversation()
+        self.assertEqual(fourth["title"], "对话 #4")
+
+        titles = [c["title"] for c in storage.get_conversations()]
+        self.assertEqual(len(titles), len(set(titles)), f"标题出现重名：{titles}")
+        self.assertIn(third["title"], titles)
+
+    def test_titles_stay_unique_across_delete_and_recreate_cycles(self):
+        """反复删除+新建后，现存标题必须始终互不相同。"""
+        for _ in range(4):
+            created = [storage.create_conversation() for _ in range(3)]
+            storage.delete_conversation(created[1]["id"])
+            titles = [c["title"] for c in storage.get_conversations()]
+            self.assertEqual(len(titles), len(set(titles)), f"标题出现重名：{titles}")
+
+    def test_manually_named_conversations_do_not_block_numbering(self):
+        storage.create_conversation(title="软考备考咨询")
+        self.assertEqual(storage.create_conversation()["title"], "对话 #1")
+
+    def test_explicit_title_is_respected(self):
+        self.assertEqual(storage.create_conversation(title="自定义")["title"], "自定义")
+
+
 if __name__ == "__main__":
     unittest.main()

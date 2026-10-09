@@ -12,6 +12,15 @@
       >
         存在冲突，请审阅
       </el-tag>
+      <el-tag
+        v-if="report.risk_degraded"
+        size="small"
+        type="warning"
+        effect="light"
+        class="conflict-tag"
+      >
+        风险校验已降级
+      </el-tag>
       <div class="recommendation">{{ report.recommendation }}</div>
     </div>
 
@@ -49,6 +58,35 @@
       <ScenarioTimeline :scene="report.scene_result" />
     </div>
 
+    <!-- 历史参考（Phase 3.3 要求展示；此前只注入 Prompt，用户看不到） -->
+    <div v-if="historyRefs.length" class="section">
+      <el-collapse class="detail-collapse">
+        <el-collapse-item :title="`历史参考（检索到 ${historyRefs.length} 条相似决策）`" name="history">
+          <div class="history-hint">
+            以下相似历史已被注入各分身的 Prompt，作为参数估算的参考。
+          </div>
+          <el-table :data="historyRefs" size="small" class="history-table">
+            <el-table-column prop="decision_id" label="决策 ID" width="90" />
+            <el-table-column label="相似度" width="90">
+              <template #default="{ row }">{{ (row.similarity * 100).toFixed(1) }}%</template>
+            </el-table-column>
+            <el-table-column label="场景类型" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.scenario_type || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="p" width="70">
+              <template #default="{ row }">{{ fmtNum(row.p) }}</template>
+            </el-table-column>
+            <el-table-column label="b" width="70">
+              <template #default="{ row }">{{ fmtNum(row.b) }}</template>
+            </el-table-column>
+            <el-table-column label="f*" width="70">
+              <template #default="{ row }">{{ fmtNum(row.f_star) }}</template>
+            </el-table-column>
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
+    </div>
+
     <!-- 量化 / 风险意见 -->
     <el-collapse class="detail-collapse">
       <el-collapse-item title="量化分析意见" name="quant">
@@ -65,12 +103,19 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { DecisionReport } from '../../types'
 import { riskTagType } from '../../utils/report'
 import PersonaVoteTable from './PersonaVoteTable.vue'
 import ScenarioTimeline from './ScenarioTimeline.vue'
 
-defineProps<{ report: DecisionReport }>()
+const props = defineProps<{ report: DecisionReport }>()
+
+const historyRefs = computed(() => props.report.history_references ?? [])
+
+function fmtNum(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : Number(value).toFixed(2)
+}
 </script>
 
 <style scoped>
@@ -134,6 +179,15 @@ defineProps<{ report: DecisionReport }>()
 }
 .detail-text.calc {
   font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+.history-hint {
+  font-size: 12px;
+  color: #8f959e;
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+.history-table {
   font-size: 12px;
 }
 </style>

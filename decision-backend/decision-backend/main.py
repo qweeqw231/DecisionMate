@@ -10,8 +10,6 @@ import logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 import asyncio
 import json
-import logging
-import re
 from typing import List
 
 from fastapi import FastAPI, HTTPException
@@ -25,7 +23,8 @@ from models.schemas import (
     PersonaCreate, PersonaUpdate, PersonaResponse,   # Phase 4.2 新增
     QuantResult,
     ConversationPersonasUpdate,  # Phase 4.2.3 新增
-    AddFactorRequest  # P0 修复：新增因子改为 JSON 请求体
+    AddFactorRequest,  # P0 修复：新增因子改为 JSON 请求体
+    HistoryReference  # P1 新增：历史参考回传
 )
 from agent_core.quant_agent import analyze
 from agent_core.risk_agent import assess
@@ -46,6 +45,7 @@ from vector_store import (
     delete_decision_vectors,  # P0 新增
 )
 from agent_core.archive_agent import run_archive
+from agent_core.json_utils import extract_json_object  # 统一的 LLM JSON 解析
 from audit import build_system_audit  # L3 系统自校正汇总
 
 
@@ -168,15 +168,12 @@ async def make_decision(request: DecisionRequest):
             max_tokens=512
         )
 
-        # 解析AI输出
+        # 解析AI输出（统一走 json_utils，容忍代码块/前后文字/末尾多余逗号）
         try:
-            clean_text = response_text.strip()
-            if clean_text.startswith("```"):
-                clean_text = re.sub(r'^```(?:json)?\s*', '', clean_text)
-                clean_text = re.sub(r'\s*```$', '', clean_text)
-            data = json.loads(clean_text)
-            recommendation = data.get("recommendation", response_text)
-        except (json.JSONDecodeError, KeyError):
+            data = extract_json_object(response_text)
+            recommendation = data.get("recommendation") or response_text
+        except ValueError as e:
+            logging.warning(f"[快回路] 输出解析失败，回退为原始文本：{e}")
             recommendation = response_text
 
         return FastDecisionReport(
@@ -368,14 +365,12 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             temperature=0.5,
             max_tokens=512
         )
+        # 解析AI输出（统一走 json_utils，避免把整段 JSON 当建议正文展示给用户）
         try:
-            clean_text = response_text.strip()
-            if clean_text.startswith("```"):
-                clean_text = re.sub(r'^```(?:json)?\s*', '', clean_text)
-                clean_text = re.sub(r'\s*```$', '', clean_text)
-            data = json.loads(clean_text)
-            recommendation = data.get("recommendation", response_text)
-        except (json.JSONDecodeError, KeyError):
+            data = extract_json_object(response_text)
+            recommendation = data.get("recommendation") or response_text
+        except ValueError as e:
+            logging.warning(f"[快回路] 输出解析失败，回退为原始文本：{e}")
             recommendation = response_text
 
         report = FastDecisionReport(
@@ -426,11 +421,21 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
                 logging.warning(f"[向量检索] 调用异常，已降级为「无历史参考」：{e}")
                 similar = []
             history_context = ""
+            history_references = []
             if similar:
                 history_context = "【历史参考】以下是与当前场景相似的过往决策记录，供参数估算参考：\n"
                 for s in similar:
                     meta = s.get("metadata", {})
                     history_context += f"- 决策ID{s['decision_id']}：p={meta.get('p','?')}, b={meta.get('b','?')}, f*={meta.get('f_star','?')}, 场景类型={meta.get('scenario_type','?')}\n"
+                    # P1：同一份检索结果也回传给前端展示（Phase 3.3「历史参考」区域）
+                    history_references.append(HistoryReference(
+                        decision_id=s["decision_id"],
+                        similarity=s.get("similarity", 0.0),
+                        scenario_type=meta.get("scenario_type"),
+                        p=meta.get("p"),
+                        b=meta.get("b"),
+                        f_star=meta.get("f_star"),
+                    ))
                 history_context += "\n请参考以上历史数据，结合当前场景进行估算。\n"
 
             # 3. 读取用户能力因子
@@ -520,6 +525,8 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
                 scene_result=scene_result
             )
             report.loop_type = "slow"
+            # P1：把检索到的历史参考回传给前端（此前只注入 Prompt，用户看不到）
+            report.history_references = history_references or None
             record_params = {
                 "p": weighted_p, "q": weighted_q, "b": weighted_b,
                 "f_star": report.f_star, "scenario_type": report.scenario_type

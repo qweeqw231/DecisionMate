@@ -6,6 +6,7 @@ API 契约测试（P0-1 配套：新增因子端点必须可被真实客户端�
 query string，而客户端提交的是 JSON body → 恒定 422。而 factor_guard 又把
 「写入未知因子」的唯一正当出口指向该接口，等于让新因子永久无法写入。
 """
+import json
 import os
 import sys
 import unittest
@@ -174,6 +175,57 @@ class TestConversationDeletePurgesVectors(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(len(calls), 1)
         self.assertIn(decision_id, calls[0])
+
+
+class TestReportSchemaFields(unittest.TestCase):
+    """P1：报告需要携带「风险降级」与「历史参考」，前端才可能展示。"""
+
+    def _report(self, **overrides):
+        from models.schemas import DecisionReport
+        payload = dict(recommendation="综合建议", f_star=0.5, risk_level="低",
+                       scenario_type="高赔率重注场景", quant_opinion="", risk_opinion="",
+                       calculation_detail="")
+        payload.update(overrides)
+        return DecisionReport(**payload)
+
+    def test_risk_degraded_is_serialized(self):
+        data = json.loads(self._report(risk_degraded=True).model_dump_json())
+        self.assertTrue(data["risk_degraded"])
+
+    def test_risk_degraded_defaults_to_false(self):
+        data = json.loads(self._report().model_dump_json())
+        self.assertFalse(data["risk_degraded"])
+
+    def test_history_references_are_serialized(self):
+        from models.schemas import HistoryReference
+        report = self._report(history_references=[
+            HistoryReference(decision_id=3, similarity=0.81,
+                             scenario_type="高赔率重注场景", p=0.9, b=10.0, f_star=0.89),
+        ])
+        data = json.loads(report.model_dump_json())
+        ref = data["history_references"][0]
+        self.assertEqual(ref["decision_id"], 3)
+        self.assertAlmostEqual(ref["similarity"], 0.81, places=4)
+        self.assertEqual(ref["scenario_type"], "高赔率重注场景")
+        self.assertAlmostEqual(ref["f_star"], 0.89, places=4)
+
+    def test_history_references_default_to_none(self):
+        data = json.loads(self._report().model_dump_json())
+        self.assertIsNone(data["history_references"])
+
+    def test_history_reference_tolerates_missing_metadata(self):
+        from models.schemas import HistoryReference
+        ref = HistoryReference(decision_id=9, similarity=0.6)
+        data = json.loads(ref.model_dump_json())
+        self.assertIsNone(data["scenario_type"])
+        self.assertIsNone(data["p"])
+        self.assertIsNone(data["f_star"])
+
+    def test_history_reference_rejects_non_numeric_metadata(self):
+        """Chroma metadata 是弱类型的，回传时必须经过校验而不是原样透传。"""
+        from models.schemas import HistoryReference
+        with self.assertRaises(Exception):
+            HistoryReference(decision_id=9, similarity=0.6, p="很高")
 
 
 if __name__ == "__main__":

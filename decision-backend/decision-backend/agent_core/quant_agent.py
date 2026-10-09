@@ -9,11 +9,12 @@
 - 能理解复杂场景中的隐含信息
 """
 
-import json
-import re
+import logging
+from typing import Optional
+
 from models.schemas import QuantResult
 from agent_core.ai_client import chat
-from typing import Optional
+from agent_core.json_utils import extract_json_object
 
 QUANT_SYSTEM_PROMPT = """你是一个量化决策分析专家。你的任务是根据用户描述的决策场景，运用凯利公式进行分析。
 
@@ -103,29 +104,9 @@ def analyze(scenario: str, system_prompt:  Optional[str] = None) -> QuantResult:
         max_tokens=1536
     )
 
-    # 尝试从回复中提取JSON
+    # 解析 AI 输出（统一走 json_utils：容忍代码块、前后文字、末尾多余逗号）
     try:
-        # 清理可能的markdown代码块标记
-        clean_text = response_text.strip()
-
-        # 去除 Markdown 代码块标记（支持多种变体）
-        if clean_text.startswith("```"):
-            # 找到第一个换行符，去掉 ```json 或 ``` 开头
-            first_newline = clean_text.find("\n")
-            if first_newline != -1:
-                clean_text = clean_text[first_newline + 1:]
-            # 去掉结尾的 ```
-            if clean_text.endswith("```"):
-                clean_text = clean_text[:-3]
-            clean_text = clean_text.strip()
-
-        # 尝试找到 JSON 对象的起止位置
-        start_idx = clean_text.find("{")
-        end_idx = clean_text.rfind("}")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            clean_text = clean_text[start_idx:end_idx + 1]
-
-        data = json.loads(clean_text)
+        data = extract_json_object(response_text)
 
         return QuantResult(
             p=round(float(data["p"]), 4),
@@ -135,8 +116,10 @@ def analyze(scenario: str, system_prompt:  Optional[str] = None) -> QuantResult:
             scenario_type=str(data["scenario_type"]),
             reasoning=str(data["reasoning"])
         )
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        # 如果AI没有按JSON格式输出，返回一个安全的默认结果
+    except Exception as e:  # noqa: BLE001 —— 解析失败一律回退到安全默认参数，不向上抛
+        # 注意：这里必须捕获 TypeError —— 模型返回 {"p": null} 时 float(None) 会抛 TypeError，
+        # 旧实现只捕获 (JSONDecodeError, KeyError, ValueError)，会在关键路径上直接 500。
+        logging.warning("[量化Agent] 输出解析失败，使用默认参数：%s", e)
         return QuantResult(
             p=0.5,
             q=0.5,

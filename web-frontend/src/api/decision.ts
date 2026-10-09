@@ -1,6 +1,7 @@
 import { get, post, del } from './client'
 import type {
   AnyReport,
+  AddFactorPayload,
   ArchiveReport,
   ActivatedPersona,
   Conversation,
@@ -60,6 +61,16 @@ export interface UserProfile {
   [key: string]: unknown
 }
 export const getUserProfile = () => get<UserProfile>('/api/user-profile')
+
+/**
+ * 用户确认后新增/更新能力因子（复盘摘要卡片的「接受提议」调用此接口）。
+ * 后端会校验名称与取值范围，非法输入返回 400。
+ */
+export const addUserFactor = (payload: AddFactorPayload) =>
+  post<{ status: string; factor_name: string; value: number }>(
+    '/api/user-profile/add-factor',
+    payload,
+  )
 
 // ---------- L3 系统自校正 ----------
 /** 汇总审计（只读，不触发任何 Agent 调用） */
