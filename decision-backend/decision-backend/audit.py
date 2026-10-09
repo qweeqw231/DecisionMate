@@ -150,6 +150,14 @@ def _scenario_type_variants(records: list) -> list:
     ]
 
 
+def month_key(created_at: Any) -> Optional[str]:
+    """从 ISO 时间字符串取「YYYY-MM」；无法解析时返回 None。"""
+    if not isinstance(created_at, str) or len(created_at) < 7:
+        return None
+    candidate = created_at[:7]
+    return candidate if re.fullmatch(r"\d{4}-\d{2}", candidate) else None
+
+
 def _accuracy(useful: int, inaccurate: int) -> Optional[float]:
     """决策级准确率：反馈为「有用」占已反馈的比例。无样本时返回 None，而不是 0。"""
     return _ratio(useful, useful + inaccurate)
@@ -187,6 +195,7 @@ def build_system_audit(records: Optional[list] = None) -> dict:
     rec_mix: dict = {}
     by_scenario: dict = {}
     by_loop: dict = {}
+    month_buckets: dict = {}
 
     scene_recognized = scene_total = 0
     conflict_count = degraded_count = persona_conflict_count = 0
@@ -224,6 +233,25 @@ def build_system_audit(records: Optional[list] = None) -> dict:
 
         band = classify_f_star(f_star)
         rec_mix[band] = rec_mix.get(band, 0) + 1
+
+        # 按月聚合（供 L3 看板画趋势）
+        mkey = month_key(record.get("created_at"))
+        if mkey:
+            mb = month_buckets.setdefault(mkey, {
+                "key": mkey, "decisions": 0, "useful": 0, "inaccurate": 0,
+                "with_feedback": 0, "heavy_bet": 0, "_f_sum": 0.0,
+            })
+            mb["decisions"] += 1
+            if feedback == "useful":
+                mb["useful"] += 1
+                mb["with_feedback"] += 1
+            elif feedback == "inaccurate":
+                mb["inaccurate"] += 1
+                mb["with_feedback"] += 1
+            if band == "重注":
+                mb["heavy_bet"] += 1
+            if f_star is not None:
+                mb["_f_sum"] += f_star
 
         scenario_key = (record.get("scenario_type") or "").strip() or "（未识别）"
         bucket = by_scenario.setdefault(scenario_key, _empty_bucket(scenario_key))
@@ -287,6 +315,22 @@ def build_system_audit(records: Optional[list] = None) -> dict:
         key=lambda row: (-row["decisions"], row["key"]),
     )
 
+    # 月度趋势（按时间正序，供看板画折线/柱状）
+    trend_rows = []
+    for key in sorted(month_buckets):
+        mb = month_buckets[key]
+        decisions = mb["decisions"]
+        trend_rows.append({
+            "month": key,
+            "decisions": decisions,
+            "with_feedback": mb["with_feedback"],
+            "feedback_coverage": _ratio(mb["with_feedback"], decisions),
+            "accuracy": _accuracy(mb["useful"], mb["inaccurate"]),
+            "heavy_bet_count": mb["heavy_bet"],
+            "heavy_bet_share": _ratio(mb["heavy_bet"], decisions),
+            "avg_f_star": round(mb["_f_sum"] / decisions, 4) if decisions else None,
+        })
+
     created = [r.get("created_at") for r in records if r.get("created_at")]
 
     return {
@@ -317,6 +361,7 @@ def build_system_audit(records: Optional[list] = None) -> dict:
         "negative_f_star_share": _ratio(sum(1 for v in f_values if v < 0), len(f_values)),
         "by_scenario_type": scenario_rows,
         "by_loop_type": loop_rows,
+        "trend_by_month": trend_rows,
         "quality": {
             "reports_usable": total - reports_missing - reports_unparseable,
             "scene_recognized_rate": _ratio(scene_recognized, scene_total),

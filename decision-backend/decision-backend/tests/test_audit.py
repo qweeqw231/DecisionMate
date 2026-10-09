@@ -254,5 +254,49 @@ class TestDataQualityAndLimitations(unittest.TestCase):
         self.assertEqual(audit["capability_profile"], {})
 
 
+class TestMonthlyTrend(unittest.TestCase):
+    def test_month_key_parsing(self):
+        from audit import month_key
+        self.assertEqual(month_key("2026-05-30T01:01:47"), "2026-05")
+        self.assertIsNone(month_key(""))
+        self.assertIsNone(month_key(None))
+        self.assertIsNone(month_key("2026"))
+        self.assertIsNone(month_key("not-a-date-at-all"))
+
+    def test_trend_is_chronological_and_aggregated(self):
+        records = [
+            rec(created_at="2026-05-30T01:00:00", f_star=0.9, feedback_type="useful",
+                report_json=report()),
+            rec(created_at="2026-05-31T01:00:00", f_star=0.1, feedback_type="inaccurate",
+                report_json=report()),
+            rec(created_at="2026-06-02T01:00:00", f_star=0.7, feedback_type=None,
+                report_json=report()),
+        ]
+        trend = build_system_audit(records=records)["trend_by_month"]
+        self.assertEqual([row["month"] for row in trend], ["2026-05", "2026-06"])
+
+        may, june = trend
+        self.assertEqual(may["decisions"], 2)
+        self.assertEqual(may["with_feedback"], 2)
+        self.assertAlmostEqual(may["accuracy"], 0.5, places=4)
+        self.assertEqual(may["heavy_bet_count"], 1)
+        self.assertAlmostEqual(may["heavy_bet_share"], 0.5, places=4)
+        self.assertAlmostEqual(may["avg_f_star"], 0.5, places=4)
+
+        self.assertEqual(june["decisions"], 1)
+        self.assertIsNone(june["accuracy"], "该月无反馈样本时准确率必须是 None")
+        self.assertAlmostEqual(june["heavy_bet_share"], 1.0, places=4)
+
+    def test_records_without_usable_timestamp_are_excluded_from_trend(self):
+        records = [rec(created_at=None, report_json=report()),
+                   rec(created_at="2026-05-30T01:00:00", report_json=report())]
+        audit = build_system_audit(records=records)
+        self.assertEqual(audit["totals"]["decisions"], 2)
+        self.assertEqual(len(audit["trend_by_month"]), 1)
+
+    def test_empty_trend_for_empty_dataset(self):
+        self.assertEqual(build_system_audit(records=[])["trend_by_month"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

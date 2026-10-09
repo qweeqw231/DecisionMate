@@ -43,6 +43,9 @@
       <div class="footer-item" @click="router.push('/personas')">
         <el-icon><User /></el-icon><span>分身管理</span>
       </div>
+      <div class="footer-item" @click="router.push('/audit')">
+        <el-icon><DataAnalysis /></el-icon><span>系统自省</span>
+      </div>
       <div class="footer-item" @click="router.push('/settings')">
         <el-icon><Setting /></el-icon><span>设置</span>
       </div>

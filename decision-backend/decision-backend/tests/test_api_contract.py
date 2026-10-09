@@ -105,8 +105,8 @@ class TestSystemAuditEndpoint(unittest.TestCase):
         body = resp.json()
         for key in ("generated_at", "window", "totals", "decision_accuracy",
                     "loop_distribution", "recommendation_mix", "by_scenario_type",
-                    "by_loop_type", "quality", "mux_parameters", "capability_profile",
-                    "limitations"):
+                    "by_loop_type", "trend_by_month", "quality", "mux_parameters",
+                    "capability_profile", "limitations"):
             self.assertIn(key, body, f"缺少字段 {key}")
         self.assertTrue(body["limitations"], "能力边界必须随结果返回")
 

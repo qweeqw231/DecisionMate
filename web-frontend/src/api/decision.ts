@@ -8,6 +8,7 @@ import type {
   Persona,
   PersonaCreatePayload,
   PersonaUpdatePayload,
+  SystemAudit,
 } from '../types'
 
 // ---------- 根状态（用于设置页测试连接） ----------
@@ -59,6 +60,10 @@ export interface UserProfile {
   [key: string]: unknown
 }
 export const getUserProfile = () => get<UserProfile>('/api/user-profile')
+
+// ---------- L3 系统自校正 ----------
+/** 汇总审计（只读，不触发任何 Agent 调用） */
+export const getSystemAudit = () => get<SystemAudit>('/api/system-audit')
 
 // ---------- 分身 ----------
 export const listPersonas = () => get<Persona[]>('/api/personas')

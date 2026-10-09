@@ -146,3 +146,76 @@ export interface StageEvent {
   stage: 'start' | 'fast' | 'quant' | 'personas' | 'risk' | 'scene' | 'merge' | string
   names?: string[]
 }
+
+// ---------- L3 系统自校正：汇总审计 ----------
+export interface AuditTotals {
+  decisions: number
+  with_feedback: number
+  useful: number
+  inaccurate: number
+  feedback_coverage: number | null
+  reports_missing: number
+  reports_unparseable: number
+}
+
+export interface AuditBreakdown {
+  key: string
+  decisions: number
+  with_feedback: number
+  useful: number
+  inaccurate: number
+  accuracy: number | null
+  avg_f_star: number | null
+  feedback_coverage: number | null
+}
+
+export interface AuditTrendPoint {
+  month: string
+  decisions: number
+  with_feedback: number
+  feedback_coverage: number | null
+  accuracy: number | null
+  heavy_bet_count: number
+  heavy_bet_share: number | null
+  avg_f_star: number | null
+}
+
+export interface AuditQuality {
+  reports_usable: number
+  scene_recognized_rate: number | null
+  conflict_rate: number | null
+  persona_conflict_count: number
+  risk_degraded_rate: number | null
+  survival_clamped_count: number
+  survival_clamp_rate: number | null
+  f_star_vs_pre_arbitration_deviations: number
+  f_star_comparable: number
+}
+
+export interface ScenarioTypeVariants {
+  normalized: string
+  variants: string[]
+  count: number
+}
+
+export interface SystemAudit {
+  generated_at: string
+  window: { start: string | null; end: string | null }
+  totals: AuditTotals
+  decision_accuracy: { value: number | null; sample: number }
+  loop_distribution: Record<string, number>
+  recommendation_mix: Record<string, number>
+  recommendation_mix_ratio: Record<string, number>
+  risk_level_distribution: Record<string, number>
+  avg_f_star: number | null
+  negative_f_star_share: number | null
+  by_scenario_type: AuditBreakdown[]
+  by_loop_type: AuditBreakdown[]
+  trend_by_month: AuditTrendPoint[]
+  quality: AuditQuality
+  mux_parameters: Record<string, number>
+  data_quality: { scenario_type_variants: ScenarioTypeVariants[] }
+  capability_profile: Record<string, unknown>
+  /** 数据能力边界：后端如实标注，前端必须原样展示 */
+  limitations: string[]
+}
