@@ -27,6 +27,41 @@ SURVIVAL_CLAMP_FACTOR = 0.3
 # 降仓下限（防御性；由于触发条件为 f* > 0.5，实际取值恒 > 0.15，此下限不会生效）
 SURVIVAL_CLAMP_FLOOR = -0.3
 
+# ---------------------------------------------------------------
+# 建议档位阈值
+# 注意：这与上面的 HEAVY_BET_THRESHOLD 是**两个不同的概念**——
+#   0.5 是「生存优先硬约束」的触发线；
+#   0.6 / 0.2 是给用户看的建议档位分界。
+# 报告文案与 L3 审计分布必须共用同一套阈值，否则会出现
+# 「报告说适度投入、看板却统计成重注」的口径分裂。
+# ---------------------------------------------------------------
+ADVICE_HEAVY_THRESHOLD = 0.6
+ADVICE_MODERATE_THRESHOLD = 0.2
+
+# 建议档位短标签（L3 审计按此统计分布）
+ADVICE_BANDS = ("重注", "适度投入", "观望或小注", "做空/撤出")
+
+
+def advice_band(f_star: float) -> str:
+    """把 f* 归入建议档位短标签（供统计使用）。"""
+    if f_star > ADVICE_HEAVY_THRESHOLD:
+        return "重注"
+    if f_star > ADVICE_MODERATE_THRESHOLD:
+        return "适度投入"
+    if f_star >= 0:
+        return "观望或小注"
+    return "做空/撤出"
+
+
+def advice_headline(f_star: float) -> str:
+    """把 f* 转成报告里的一句话建议（供各融合链路与 L1 校准共用）。"""
+    return {
+        "重注": "果断下重注",
+        "适度投入": "适度投入",
+        "观望或小注": "观望或小注试探",
+        "做空/撤出": "主动撤出，保护核心资产",
+    }[advice_band(f_star)]
+
 
 def apply_survival_constraint(f_star: float, risk_result: RiskResult) -> tuple[float, bool, str]:
     """
@@ -113,18 +148,16 @@ def merge(quant_result: QuantResult, risk_result: RiskResult, scene_result=None)
     # 生成综合建议文本
     recommendation_parts = []
 
-    # 核心建议
-    if adjusted_f_star > 0.6:
-        recommendation_parts.append("综合建议：果断下重注。")
+    # 核心建议（档位阈值统一由 advice_band/advice_headline 提供）
+    band = advice_band(adjusted_f_star)
+    recommendation_parts.append(f"综合建议：{advice_headline(adjusted_f_star)}。")
+    if band == "重注":
         recommendation_parts.append(f"当前决策属于{quant_result.scenario_type}，赔率足够高，应全力投入约{adjusted_f_star:.0%}的可用资源。")
-    elif adjusted_f_star > 0.2:
-        recommendation_parts.append("综合建议：适度投入。")
+    elif band == "适度投入":
         recommendation_parts.append(f"可投入约{adjusted_f_star:.0%}的精力/资源，保留余量应对不确定性。")
-    elif adjusted_f_star >= 0:
-        recommendation_parts.append("综合建议：观望或小注试探。")
+    elif band == "观望或小注":
         recommendation_parts.append(f"当前胜率或赔率不够理想(f*={adjusted_f_star:.2f})，建议小注获取更多信息后再做判断。")
     else:
-        recommendation_parts.append("综合建议：主动撤出，保护核心资产。")
         recommendation_parts.append(f"凯利公式计算结果为负(f*={adjusted_f_star:.2f})，此决策不值得投入。将精力留给更值得的战场。")
 
     # 融合风险建议（与多分身链路共用同一份提示逻辑）

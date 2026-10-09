@@ -32,12 +32,20 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from agent_core.mux import HEAVY_BET_THRESHOLD, SURVIVAL_CLAMP_FACTOR
+from agent_core.mux import (
+    ADVICE_BANDS,
+    HEAVY_BET_THRESHOLD,
+    SURVIVAL_CLAMP_FACTOR,
+    advice_band,
+)
 from storage import get_decision_records_with_report
 
-# f* 分档（与 mux.py 的建议分档保持一致）
-HEAVY_BET = HEAVY_BET_THRESHOLD          # > 0.5 视为重注
-MODERATE_BET = 0.2                       # 0.2 ~ 0.5 适度投入
+# f* 分档沿用 mux 的统一阈值（报告文案与审计分布必须同一口径）
+# 注意：此处原先用 HEAVY_BET_THRESHOLD(0.5) 判「重注」，而报告文案在 0.6 才叫重注，
+# 会出现「报告说适度投入、看板却统计成重注」的分裂，现统一走 advice_band。
+MODERATE_BET = 0.2
+# 触发强制降仓的阈值（统计生存约束用）
+HEAVY_BET = HEAVY_BET_THRESHOLD
 # 「接近生存降仓」的判定容差
 CLAMP_TOLERANCE = 0.02
 # 判定 f* 与凯利原始值「显著偏离」的阈值
@@ -60,16 +68,10 @@ def _parse_report(raw: Any) -> Optional[dict]:
 
 
 def classify_f_star(f_star: Optional[float]) -> str:
-    """把 f* 归入建议档位（与 mux 的输出文案对应）。"""
+    """把 f* 归入建议档位（与报告文案共用 mux.advice_band，避免口径分裂）。"""
     if f_star is None:
         return "未知"
-    if f_star > HEAVY_BET:
-        return "重注"
-    if f_star > MODERATE_BET:
-        return "适度投入"
-    if f_star >= 0:
-        return "观望或小注"
-    return "做空/撤出"
+    return advice_band(f_star)
 
 
 def expected_pre_arbitration_f_star(record: dict, report: Optional[dict]) -> Optional[float]:

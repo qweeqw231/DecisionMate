@@ -108,6 +108,34 @@ export interface BoundaryConfigMeta {
   updated_at: string | null
 }
 
+// ---------- L1 执行中校准 ----------
+export interface TrajectoryPoint {
+  kind: 'initial' | 'calibration' | string
+  created_at: string
+  p: number
+  q: number
+  b: number
+  /** 凯利原始值 */
+  f_star: number
+  /** 经生存优先硬约束后的实际建议值 */
+  adjusted_f_star: number
+  advice: string
+  /** continue | watch | stop */
+  verdict: string
+  note?: string | null
+  reasoning: string
+  risk_level: string
+  conflict: boolean
+  degraded: boolean
+}
+
+export interface CalibrationTrajectory {
+  decision_id: number
+  scenario: string
+  scenario_type: string
+  points: TrajectoryPoint[]
+}
+
 // 快回路报告
 export interface FastDecisionReport {
   loop_type: 'fast' | string

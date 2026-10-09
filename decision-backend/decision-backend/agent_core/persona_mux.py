@@ -16,7 +16,13 @@ P0 修复说明
 from typing import List
 
 from models.schemas import DecisionReport, PersonaVote, RiskResult
-from agent_core.mux import apply_survival_constraint, degraded_note, risk_advisory
+from agent_core.mux import (
+    advice_band,
+    advice_headline,
+    apply_survival_constraint,
+    degraded_note,
+    risk_advisory,
+)
 
 # 分身意见分歧阈值：任意两个分身的 f* 差异超过该值即标记冲突
 PERSONA_CONFLICT_THRESHOLD = 0.4
@@ -44,15 +50,18 @@ def merge_personas(persona_results: List[dict], weighted_f_star: float,
         weighted_f_star, risk_result
     )
 
-    # ---- 综合建议生成 ----
-    if adjusted_f_star > 0.6:
-        recommendation = f"综合建议：果断下重注。会商加权 f* = {adjusted_f_star:.2f}，多分身综合判断赔率足够高。"
-    elif adjusted_f_star > 0.2:
-        recommendation = f"综合建议：适度投入。会商加权 f* = {adjusted_f_star:.2f}，建议保留余量。"
-    elif adjusted_f_star >= 0:
-        recommendation = f"综合建议：观望或小注试探。会商加权 f* = {adjusted_f_star:.2f}，当前胜率或赔率不够理想。"
-    else:
-        recommendation = f"综合建议：主动撤出，保护核心资产。会商加权 f* = {adjusted_f_star:.2f}，不值得投入。"
+    # ---- 综合建议生成（档位阈值统一由 mux.advice_band 提供）----
+    band = advice_band(adjusted_f_star)
+    suffix = {
+        "重注": "多分身综合判断赔率足够高。",
+        "适度投入": "建议保留余量。",
+        "观望或小注": "当前胜率或赔率不够理想。",
+        "做空/撤出": "不值得投入。",
+    }[band]
+    recommendation = (
+        f"综合建议：{advice_headline(adjusted_f_star)}。"
+        f"会商加权 f* = {adjusted_f_star:.2f}，{suffix}"
+    )
 
     # ---- 冲突检测：分身意见分歧 ----
     f_stars = [r['f_star'] for r in persona_results]

@@ -145,5 +145,102 @@ class TestDefaultConversationTitle(unittest.TestCase):
         self.assertEqual(storage.create_conversation(title="自定义")["title"], "自定义")
 
 
+class TestExecutionUpdates(unittest.TestCase):
+    """L1 执行中校准：阶段性进展的存储与轨迹查询。"""
+
+    @classmethod
+    def setUpClass(cls):
+        storage.init_db()
+
+    def setUp(self):
+        storage.clear_all_conversations()
+
+    def _decision(self, title="L1"):
+        conv = storage.create_conversation(title=title)
+        msg = storage.add_message(conv["id"], "assistant", "{}")
+        decision_id = storage.add_decision_record(
+            conv_id=conv["id"], msg_id=msg["id"], scenario="要不要备考软考",
+            p=0.9, q=0.1, b=10.0, f_star=0.89,
+            scenario_type="高赔率重注场景", loop_type="slow",
+        )
+        return conv, msg, decision_id
+
+    def _update(self, decision_id, note="第一周完成一半", p=0.8, b=4.0):
+        from kelly import kelly_fraction
+        return storage.add_execution_update(
+            decision_id=decision_id, note=note,
+            p=p, q=round(1 - p, 4), b=b,
+            f_star=round(kelly_fraction(p, b), 4), adjusted_f_star=round(kelly_fraction(p, b), 4),
+            verdict="continue", advice="适度投入", reasoning="推理",
+            risk_level="低", conflict=False, degraded=False,
+        )
+
+    def test_tests_use_an_isolated_database(self):
+        self.assertIn("decisionmate-tests-", storage.DB_PATH)
+
+    def test_add_and_list(self):
+        _, _, decision_id = self._decision()
+        created = self._update(decision_id)
+        self.assertGreater(created["id"], 0)
+        self.assertFalse(created["conflict"])
+
+        rows = storage.get_execution_updates(decision_id)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["note"], "第一周完成一半")
+        self.assertAlmostEqual(rows[0]["p"], 0.8, places=4)
+        self.assertFalse(rows[0]["conflict"])
+        self.assertFalse(rows[0]["degraded"])
+
+    def test_updates_are_isolated_per_decision(self):
+        _, _, first = self._decision("A")
+        _, _, second = self._decision("B")
+        self._update(first, note="A 的进展")
+        self._update(second, note="B 的进展")
+
+        self.assertEqual([r["note"] for r in storage.get_execution_updates(first)], ["A 的进展"])
+        self.assertEqual([r["note"] for r in storage.get_execution_updates(second)], ["B 的进展"])
+
+    def test_ordering_is_chronological(self):
+        _, _, decision_id = self._decision()
+        for note in ["第一次", "第二次", "第三次"]:
+            self._update(decision_id, note=note)
+        self.assertEqual(
+            [r["note"] for r in storage.get_execution_updates(decision_id)],
+            ["第一次", "第二次", "第三次"],
+        )
+
+    def test_flags_round_trip_as_booleans(self):
+        _, _, decision_id = self._decision()
+        storage.add_execution_update(
+            decision_id=decision_id, note="触发硬约束", p=0.95, q=0.05, b=20.0,
+            f_star=0.9, adjusted_f_star=0.27, verdict="continue", advice="适度投入",
+            reasoning="冲突", risk_level="高", conflict=True, degraded=True,
+        )
+        row = storage.get_execution_updates(decision_id)[0]
+        self.assertIs(row["conflict"], True)
+        self.assertIs(row["degraded"], True)
+
+    def test_cascade_on_conversation_delete(self):
+        conv, _, decision_id = self._decision()
+        self._update(decision_id)
+        storage.delete_conversation(conv["id"])
+        self.assertEqual(storage.get_execution_updates(decision_id), [])
+
+    def test_get_decision_record_by_message(self):
+        conv, msg, decision_id = self._decision()
+        record = storage.get_decision_record_by_message(conv["id"], msg["id"])
+        self.assertIsNotNone(record)
+        self.assertEqual(record["id"], decision_id)
+
+    def test_get_decision_record_by_message_scopes_to_conversation(self):
+        conv_a, msg_a, _ = self._decision("A")
+        conv_b, _, _ = self._decision("B")
+        # 用 B 的对话 id 去查 A 的消息，不应命中
+        self.assertIsNone(storage.get_decision_record_by_message(conv_b["id"], msg_a["id"]))
+
+    def test_get_decision_record_by_message_missing(self):
+        self.assertIsNone(storage.get_decision_record_by_message(999999, 999999))
+
+
 if __name__ == "__main__":
     unittest.main()

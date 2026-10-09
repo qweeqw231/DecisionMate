@@ -39,14 +39,22 @@ def report(**overrides):
 
 class TestHelpers(unittest.TestCase):
     def test_classify_f_star_bands(self):
+        # 档位阈值统一由 mux.advice_band 提供：>0.6 重注，>0.2 适度投入，>=0 观望，<0 撤出
         self.assertEqual(classify_f_star(0.9), "重注")
-        self.assertEqual(classify_f_star(0.51), "重注")
-        self.assertEqual(classify_f_star(0.5), "适度投入")
+        self.assertEqual(classify_f_star(0.61), "重注")
+        self.assertEqual(classify_f_star(0.6), "适度投入")
         self.assertEqual(classify_f_star(0.21), "适度投入")
         self.assertEqual(classify_f_star(0.2), "观望或小注")
         self.assertEqual(classify_f_star(0.0), "观望或小注")
         self.assertEqual(classify_f_star(-0.3), "做空/撤出")
         self.assertEqual(classify_f_star(None), "未知")
+
+    def test_classification_matches_the_report_wording(self):
+        """回归：审计分布与报告文案必须同口径（原先 0.5 判重注、报告 0.6 才叫重注）。"""
+        from agent_core.mux import advice_band
+        for value in (0.9, 0.61, 0.6, 0.55, 0.3, 0.2, 0.1, 0.0, -0.3):
+            with self.subTest(value=value):
+                self.assertEqual(classify_f_star(value), advice_band(value))
 
     def test_expected_f_star_single_persona_is_kelly(self):
         self.assertAlmostEqual(

@@ -2,7 +2,11 @@
   <div class="report-card">
     <BoundaryBlock v-if="isBoundary" :report="report as BoundaryReport" />
     <FastReportBlock v-else-if="isFast" :report="report as FastDecisionReport" />
-    <SlowReportBlock v-else :report="report as DecisionReport" />
+    <template v-else>
+      <SlowReportBlock :report="report as DecisionReport" />
+      <!-- L1 执行中校准：只有落库的慢回路决策才有对应的决策记录 -->
+      <ExecutionTracker v-if="msgId > 0" :conv-id="convId" :msg-id="msgId" />
+    </template>
     <div v-if="showFeedback && msgId > 0" class="feedback-wrap">
       <FeedbackBar :conv-id="convId" :msg-id="msgId" />
     </div>
@@ -14,6 +18,7 @@ import { computed } from 'vue'
 import type { AnyReport, BoundaryReport, DecisionReport, FastDecisionReport } from '../../types'
 import { isBoundaryReport, isFastReport } from '../../utils/report'
 import BoundaryBlock from './BoundaryBlock.vue'
+import ExecutionTracker from './ExecutionTracker.vue'
 import FastReportBlock from './FastReportBlock.vue'
 import SlowReportBlock from './SlowReportBlock.vue'
 import FeedbackBar from './FeedbackBar.vue'

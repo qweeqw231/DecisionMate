@@ -133,6 +133,53 @@ class BoundaryReport(BaseModel):
 
 
 # ==========================================
+# P1-5 新增：L1 执行中校准
+# ==========================================
+
+class CalibrationResult(BaseModel):
+    """一次执行中校准的结果（p、b 由模型重估，f* 由 kelly.py 确定性计算）"""
+    p: float
+    q: float
+    b: float
+    f_star: float          # 仲裁前
+    verdict: str           # continue / watch / stop
+    advice: str = ""
+    reasoning: str = ""
+    degraded: bool = False  # 模型输出不可用，已沿用上一次参数
+
+
+class ExecutionUpdateRequest(BaseModel):
+    """用户提交的一条阶段性进展"""
+    note: str
+
+
+class TrajectoryPoint(BaseModel):
+    """轨迹上的一个点：初始预判，或一次执行中校准"""
+    kind: str              # initial / calibration
+    created_at: str
+    p: float
+    q: float
+    b: float
+    f_star: float              # 凯利原始值
+    adjusted_f_star: float     # 经生存优先硬约束后的实际建议值
+    advice: str
+    verdict: str
+    note: Optional[str] = None
+    reasoning: str = ""
+    risk_level: str = ""
+    conflict: bool = False
+    degraded: bool = False
+
+
+class CalibrationTrajectory(BaseModel):
+    """「初始预判 → 逐次校准」的完整轨迹（架构 6.2 要求对比展示）"""
+    decision_id: int
+    scenario: str
+    scenario_type: str
+    points: List[TrajectoryPoint]
+
+
+# ==========================================
 # Phase 3.2 新增：对话与消息模型
 # ==========================================
 

@@ -6,6 +6,7 @@ import type {
   ActivatedPersona,
   BoundaryConfig,
   BoundaryConfigMeta,
+  CalibrationTrajectory,
   Conversation,
   Message,
   Persona,
@@ -84,6 +85,18 @@ export const updateBoundaryConfig = (payload: Partial<BoundaryConfig>) =>
   post<{ status: string; config: BoundaryConfig }>('/api/boundary-config', payload)
 export const resetBoundaryConfig = () =>
   post<{ status: string; config: BoundaryConfig }>('/api/boundary-config/reset')
+
+// ---------- L1 执行中校准（P1-5） ----------
+export const getExecutionTrajectory = (convId: number, msgId: number) =>
+  get<CalibrationTrajectory>(
+    `/api/conversations/${convId}/messages/${msgId}/execution-updates`,
+  )
+/** 记录一条阶段性进展，返回「初始预判 → 逐次校准」的完整轨迹 */
+export const addExecutionUpdate = (convId: number, msgId: number, note: string) =>
+  post<CalibrationTrajectory>(
+    `/api/conversations/${convId}/messages/${msgId}/execution-updates`,
+    { note },
+  )
 
 // ---------- 分身 ----------
 export const listPersonas = () => get<Persona[]>('/api/personas')

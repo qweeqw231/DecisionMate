@@ -26,6 +26,9 @@ from models.schemas import (
     AddFactorRequest,  # P0 修复：新增因子改为 JSON 请求体
     HistoryReference,  # P1 新增：历史参考回传
     BoundaryReport,    # P1-4 新增：关系边界关机输出
+    CalibrationTrajectory,  # P1-5 新增：L1 执行中校准轨迹
+    ExecutionUpdateRequest,
+    TrajectoryPoint,
 )
 from agent_core.quant_agent import analyze
 from agent_core.risk_agent import assess
@@ -39,6 +42,8 @@ from storage import (
     get_personas, get_persona, create_persona, update_persona, delete_persona, reset_preset_persona,
     get_conversation_personas,save_conversation_personas,
     get_decision_ids_for_conversation, get_all_decision_ids,  # P0 新增：向量库同步清理
+    get_decision_record_by_message,  # P1-5 新增
+    add_execution_update, get_execution_updates,  # P1-5 新增：L1 执行中校准
 )
 from vector_store import (
     store_decision_vector, search_similar_decisions,
@@ -47,7 +52,9 @@ from vector_store import (
 )
 from agent_core.archive_agent import run_archive
 from agent_core.boundary_agent import check_boundary  # P1-4 关系边界
+from agent_core.calibration_agent import recalibrate, verdict_for_f_star  # P1-5 L1 校准
 from agent_core.json_utils import extract_json_object  # 统一的 LLM JSON 解析
+from agent_core.mux import advice_headline, apply_survival_constraint
 from audit import build_system_audit  # L3 系统自校正汇总
 from boundary_config import (  # P1-4 边界配置（L3 可调参数）
     DEFAULT_SHUTDOWN_MESSAGE,
@@ -757,6 +764,145 @@ async def api_submit_feedback(conv_id: int, msg_id: int, body: FeedbackRequest):
         "status": "ok",
         "archive_report": archive_report.dict()
     }
+
+
+# ==========================================
+# P1-5 新增：L1 执行中校准 API
+# 架构 6.1：决策执行过程中，每次阶段性结果出现时重新计算 f*，
+#           判断「继续执行」vs「及时止损」；
+# 架构 6.2：初始参数与校准后参数分别计算 f*，对比展示变化轨迹。
+# ==========================================
+
+MAX_EXECUTION_NOTE_LENGTH = 2000
+
+
+def _build_trajectory(record: dict, updates: list) -> CalibrationTrajectory:
+    """
+    把初始预判与逐次校准拼成一条可比对的轨迹。
+
+    初始点两个 f* 字段都取**决策记录里的实际建议值**：多分身链路的决策记录存的是
+    各分身 f* 的加权平均，它与 kelly(加权 p, 加权 b) 并不相等，
+    若在这里「重算」原始 f*，就会凭空造出一个从未展示给用户的数字。
+    校准点则如实区分：f_star 是确定性引擎的原始值，adjusted_f_star 是过了
+    生存优先硬约束之后的实际建议值。
+    """
+    initial_effective = float(record["f_star"])
+
+    points = [TrajectoryPoint(
+        kind="initial",
+        created_at=record["created_at"],
+        p=float(record["p"]),
+        q=float(record["q"]),
+        b=float(record["b"]),
+        f_star=initial_effective,
+        adjusted_f_star=initial_effective,
+        advice=advice_headline(initial_effective),
+        verdict=verdict_for_f_star(initial_effective),
+        reasoning="决策时的初始预判（决策记录中实际给出的建议值）。",
+    )]
+
+    for item in updates:
+        effective = float(item["adjusted_f_star"])
+        points.append(TrajectoryPoint(
+            kind="calibration",
+            created_at=item["created_at"],
+            p=float(item["p"]),
+            q=float(item["q"]),
+            b=float(item["b"]),
+            f_star=float(item["f_star"]),
+            adjusted_f_star=effective,
+            advice=item["advice"] or advice_headline(effective),
+            verdict=item["verdict"],
+            note=item["note"],
+            reasoning=item["reasoning"],
+            risk_level=item["risk_level"],
+            conflict=bool(item["conflict"]),
+            degraded=bool(item["degraded"]),
+        ))
+
+    return CalibrationTrajectory(
+        decision_id=record["id"],
+        scenario=record["scenario"],
+        scenario_type=record["scenario_type"],
+        points=points,
+    )
+
+
+@app.get("/api/conversations/{conv_id}/messages/{msg_id}/execution-updates",
+         response_model=CalibrationTrajectory)
+async def api_get_execution_updates(conv_id: int, msg_id: int):
+    """返回该决策的执行中校准轨迹（只读）。"""
+    record = await asyncio.to_thread(get_decision_record_by_message, conv_id, msg_id)
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail="该消息没有对应的决策记录（快回路与边界关机消息不支持执行跟踪）",
+        )
+    updates = await asyncio.to_thread(get_execution_updates, record["id"])
+    return _build_trajectory(record, updates)
+
+
+@app.post("/api/conversations/{conv_id}/messages/{msg_id}/execution-updates",
+          response_model=CalibrationTrajectory)
+async def api_add_execution_update(conv_id: int, msg_id: int, body: ExecutionUpdateRequest):
+    """
+    记录一条阶段性进展，触发 L1 重新校准 p/b 与 f*，返回完整轨迹。
+    """
+    note = (body.note or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="进展描述不能为空")
+    if len(note) > MAX_EXECUTION_NOTE_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"进展描述过长（上限 {MAX_EXECUTION_NOTE_LENGTH} 字）",
+        )
+
+    record = await asyncio.to_thread(get_decision_record_by_message, conv_id, msg_id)
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail="该消息没有对应的决策记录（快回路与边界关机消息不支持执行跟踪）",
+        )
+
+    history = await asyncio.to_thread(get_execution_updates, record["id"])
+    initial = {"p": record["p"], "q": record["q"], "b": record["b"], "f_star": record["f_star"]}
+
+    calibration = await asyncio.to_thread(
+        recalibrate, record["scenario"], record["scenario_type"], initial, history, note
+    )
+
+    # 架构 4.2 原则四：任何决策建议都必须经过风险 Agent 的破产风险校验，
+    # L1 的校准建议同样不能例外。
+    quant = QuantResult(
+        p=calibration.p, q=calibration.q, b=calibration.b,
+        f_star=calibration.f_star,
+        scenario_type=record["scenario_type"],
+        reasoning=calibration.reasoning,
+    )
+    risk_result = await asyncio.to_thread(assess, record["scenario"], quant)
+    adjusted, conflict, conflict_note = apply_survival_constraint(calibration.f_star, risk_result)
+
+    reasoning = calibration.reasoning if not conflict else f"{calibration.reasoning}\n{conflict_note}"
+
+    await asyncio.to_thread(
+        add_execution_update,
+        decision_id=record["id"],
+        note=note,
+        p=calibration.p, q=calibration.q, b=calibration.b,
+        f_star=calibration.f_star,
+        adjusted_f_star=adjusted,
+        # 判定与文案都基于**仲裁后**的 f*，与用户实际看到的建议保持一致
+        verdict=verdict_for_f_star(adjusted),
+        advice=advice_headline(adjusted),
+        reasoning=reasoning,
+        risk_level=risk_result.risk_level,
+        conflict=conflict,
+        degraded=calibration.degraded,
+    )
+
+    updates = await asyncio.to_thread(get_execution_updates, record["id"])
+    return _build_trajectory(record, updates)
+
 
 @app.get("/api/user-profile")
 async def api_get_profile():

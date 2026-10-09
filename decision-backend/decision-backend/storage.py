@@ -149,6 +149,31 @@ def init_db():
         )
     """)
 
+    # 执行进展表（L1 执行中校准）：每条记录一次阶段性进展 + 当次重估后的参数
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS execution_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id INTEGER NOT NULL,
+            note TEXT NOT NULL,
+            p REAL NOT NULL,
+            q REAL NOT NULL,
+            b REAL NOT NULL,
+            f_star REAL NOT NULL,
+            adjusted_f_star REAL NOT NULL,
+            verdict TEXT NOT NULL,
+            advice TEXT NOT NULL DEFAULT '',
+            reasoning TEXT NOT NULL DEFAULT '',
+            risk_level TEXT NOT NULL DEFAULT '',
+            conflict INTEGER NOT NULL DEFAULT 0,
+            degraded INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (decision_id) REFERENCES decision_records(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_execution_updates_decision ON execution_updates(decision_id)"
+    )
+
     conn.commit()
     conn.close()
 
@@ -432,6 +457,71 @@ def update_decision_message_id(decision_id: int, message_id: int):
     conn.execute("UPDATE decision_records SET message_id = ? WHERE id = ?", (message_id, decision_id))
     conn.commit()
     conn.close()
+
+
+def get_decision_record_by_message(conv_id: int, msg_id: int) -> Optional[dict]:
+    """
+    由「对话 + 消息」定位决策记录。
+
+    反馈接口与 L1 执行中校准都需要这一步：前端只持有 msg_id，
+    而决策记录在消息落库时已绑定真实 msg_id。
+    """
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT * FROM decision_records WHERE message_id = ? AND conversation_id = ?",
+        (msg_id, conv_id)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ==========================================
+# L1 执行中校准：阶段性进展与参数轨迹
+# ==========================================
+
+def add_execution_update(decision_id: int, note: str, p: float, q: float, b: float,
+                         f_star: float, adjusted_f_star: float, verdict: str,
+                         advice: str = "", reasoning: str = "",
+                         risk_level: str = "", conflict: bool = False,
+                         degraded: bool = False) -> dict:
+    """记录一次阶段性进展及其重估结果，返回该条记录。"""
+    conn = _get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute(
+        """INSERT INTO execution_updates
+           (decision_id, note, p, q, b, f_star, adjusted_f_star, verdict, advice,
+            reasoning, risk_level, conflict, degraded, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (decision_id, note, p, q, b, f_star, adjusted_f_star, verdict, advice,
+         reasoning, risk_level, 1 if conflict else 0, 1 if degraded else 0, now)
+    )
+    row_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return {
+        "id": row_id, "decision_id": decision_id, "note": note,
+        "p": p, "q": q, "b": b, "f_star": f_star,
+        "adjusted_f_star": adjusted_f_star, "verdict": verdict, "advice": advice,
+        "reasoning": reasoning, "risk_level": risk_level,
+        "conflict": bool(conflict), "degraded": bool(degraded), "created_at": now,
+    }
+
+
+def get_execution_updates(decision_id: int) -> List[dict]:
+    """按时间正序返回某条决策的全部阶段性校准记录。"""
+    conn = _get_connection()
+    rows = conn.execute(
+        """SELECT id, decision_id, note, p, q, b, f_star, adjusted_f_star, verdict,
+                  advice, reasoning, risk_level, conflict, degraded, created_at
+           FROM execution_updates WHERE decision_id = ?
+           ORDER BY created_at ASC, id ASC""",
+        (decision_id,)
+    ).fetchall()
+    conn.close()
+    return [
+        dict(row) | {"conflict": bool(row["conflict"]), "degraded": bool(row["degraded"])}
+        for row in rows
+    ]
 
 
 # ==========================================
