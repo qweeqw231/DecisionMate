@@ -5,11 +5,14 @@
 """
 
 import json
+import logging
 from datetime import datetime
-from typing import Optional
+
 from models.schemas import ArchiveReport, NewFactorProposal
 from agent_core.ai_client import chat
-from vector_store import get_user_profile, update_user_profile, add_profile_factor
+from agent_core.json_utils import extract_json_object
+from factor_guard import sanitize_factor_updates
+from vector_store import get_user_profile, update_user_profile
 
 ARCHIVE_SYSTEM_PROMPT = """你是一个复盘分析专家。你的任务是对比用户的决策初始预判和实际结果，执行偏差分析。
 
@@ -70,27 +73,40 @@ def run_archive(decision_id: int, initial_f_star: float, p: float, q: float, b: 
         max_tokens=1024
     )
 
-    # 解析AI输出
-    import re as re_module
+    # 解析 AI 输出
     try:
-        clean_text = response_text.strip()
-        if clean_text.startswith("```"):
-            clean_text = re_module.sub(r'^```(?:json)?\s*', '', clean_text)
-            clean_text = re_module.sub(r'\s*```$', '', clean_text)
-        data = json.loads(clean_text)
+        data = extract_json_object(response_text)
 
-        # 更新能力因子
-        factor_updates = data.get("factor_updates", {})
-        for factor_name, update_info in factor_updates.items():
-            if "new" in update_info:
-                now = datetime.now().isoformat()
-                reason = update_info.get("reason", "复盘校准")
-                updates = {
-                    factor_name: update_info["new"],
+        # ---- 更新能力因子（P0 修复：所有写入都必须经过 factor_guard 校验）----
+        raw_updates = data.get("factor_updates") or {}
+        proposals: dict = {}
+        reasons: dict = {}
+        if isinstance(raw_updates, dict):
+            for factor_name, update_info in raw_updates.items():
+                if not isinstance(update_info, dict) or "new" not in update_info:
+                    continue
+                proposals[factor_name] = update_info["new"]
+                reasons[factor_name] = update_info.get("reason", "复盘校准")
+
+        accepted, rejections = sanitize_factor_updates(profile, proposals)
+        for reason in rejections:
+            logging.warning("[复盘归档] 因子写入未通过校验：%s", reason)
+
+        applied_updates: dict = {}
+        if accepted:
+            now = datetime.now().isoformat()
+            for factor_name, new_value in accepted.items():
+                old_value = profile.get(factor_name)
+                update_user_profile({
+                    factor_name: new_value,
                     f"{factor_name}_updated_at": now,
-                    f"{factor_name}_basis": reason
+                    f"{factor_name}_basis": reasons.get(factor_name, "复盘校准"),
+                })
+                applied_updates[factor_name] = {
+                    "old": old_value,
+                    "new": new_value,
+                    "reason": reasons.get(factor_name, "复盘校准"),
                 }
-                update_user_profile(updates)
 
         # 解析新因子提议
         new_factor = None
@@ -109,17 +125,20 @@ def run_archive(decision_id: int, initial_f_star: float, p: float, q: float, b: 
             initial_f_star=initial_f_star,
             feedback_type=feedback_type,
             deviation_analysis=data.get("deviation_analysis", ""),
-            factor_updates=factor_updates,
+            factor_updates=applied_updates,   # 只上报真正写入的值，不再是模型的原始提议
             new_factor_proposal=new_factor,
-            reusable_pattern=data.get("reusable_pattern")
+            reusable_pattern=data.get("reusable_pattern"),
+            guard_rejections=rejections
         )
 
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
+    except Exception as e:  # noqa: BLE001 —— 复盘失败不应中断反馈流程
+        logging.error("[复盘归档] 分析失败：%s", e)
         return ArchiveReport(
             decision_id=decision_id,
             initial_f_star=initial_f_star,
             feedback_type=feedback_type,
             deviation_analysis=f"复盘分析异常: {str(e)}",
             factor_updates={},
-            new_factor_proposal=None
+            new_factor_proposal=None,
+            guard_rejections=[f"复盘分析异常：{e}"]
         )

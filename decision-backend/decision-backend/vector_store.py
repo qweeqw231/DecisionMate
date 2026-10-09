@@ -6,12 +6,15 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
 from dotenv import load_dotenv
 from typing import Any
+
+from factor_guard import validate_new_factor
 
 load_dotenv()
 
@@ -94,16 +97,28 @@ def store_decision_vector(decision_id: int, scenario: str, metadata: dict):
 
 
 def search_similar_decisions(scenario: str, top_k: int = 5, threshold: float = 0.7) -> list[dict]:
-    """检索与当前场景最相似的历史决策"""
-    collection = get_decision_collection()
-    if collection.count() == 0:
-        return []
+    """
+    检索与当前场景最相似的历史决策。
 
-    query_embedding = embed_text(scenario)
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(top_k, collection.count())
-    )
+    P0 修复：历史参考是「锦上添花」的增强项，不是决策的前置条件。
+    原先本函数在关键路径（main.py 慢回路）上没有任何异常保护，一旦
+    Embedding API（SiliconFlow）不可用或 Chroma 异常，整个决策会直接 500，
+    与 Phase 4.2「读取失败时系统正常降级」的要求相反。
+    现在检索失败一律降级为空结果并记录告警，由调用方继续完成分析。
+    """
+    try:
+        collection = get_decision_collection()
+        if collection.count() == 0:
+            return []
+
+        query_embedding = embed_text(scenario)
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(top_k, collection.count())
+        )
+    except Exception as e:  # noqa: BLE001 —— 降级优先，绝不因检索失败中断决策
+        logging.warning("[向量检索] 失败，已降级为「无历史参考」：%s", e)
+        return []
 
     similar = []
     if results['ids'] and results['ids'][0]:
@@ -117,6 +132,39 @@ def search_similar_decisions(scenario: str, top_k: int = 5, threshold: float = 0
                     "metadata": results['metadatas'][0][i] if results['metadatas'] else {}
                 })
     return similar
+
+
+def get_all_decision_vector_ids() -> list[str]:
+    """列出向量库中全部决策向量 ID（用于孤儿向量巡检）。失败时返回空列表。"""
+    try:
+        collection = get_decision_collection()
+        return list(collection.get(include=[])["ids"])
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[向量库] 读取向量 ID 列表失败：%s", e)
+        return []
+
+
+def delete_decision_vectors(decision_ids) -> int:
+    """
+    删除指定决策 ID 对应的向量，返回**实际存在并已删除**的数量。
+
+    P0 修复：原先删除对话/清空数据只清 SQLite，Chroma 中的向量会变成孤儿，
+    却仍会被检索出来当作「历史参考」注入 Prompt。
+    返回真实删除数（先查后删），避免日志谎报清理量。
+    """
+    ids = [str(i) for i in decision_ids]
+    if not ids:
+        return 0
+    try:
+        collection = get_decision_collection()
+        existing = collection.get(ids=ids)["ids"]
+        if not existing:
+            return 0
+        collection.delete(ids=existing)
+        return len(existing)
+    except Exception as e:  # noqa: BLE001 —— 清理失败不应影响删除操作本身
+        logging.warning("[向量库] 删除向量失败（ids=%s）：%s", ids, e)
+        return 0
 
 
 def init_user_profile(initial_values: dict):
@@ -152,12 +200,19 @@ def update_user_profile(updates: dict):
 
 
 def add_profile_factor(factor_name: str, value: float, basis: str):
-    """新增一个能力因子（需用户确认）"""
+    """
+    新增一个能力因子（需用户在复盘摘要卡片中确认）。
+
+    P0 修复：校验名称与取值范围，避免写入 NaN、越界值或与内部字段冲突的键名。
+    """
     from datetime import datetime
+
+    name, safe_value = validate_new_factor(factor_name, value)
     now = datetime.now().isoformat()
     updates = {
-        factor_name: value,
-        f"{factor_name}_updated_at": now,
-        f"{factor_name}_basis": basis
+        name: safe_value,
+        f"{name}_updated_at": now,
+        f"{name}_basis": basis
     }
     update_user_profile(updates)
+    return name, safe_value

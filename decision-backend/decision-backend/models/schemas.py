@@ -25,6 +25,8 @@ class RiskResult(BaseModel):
     overload_signal: bool
     zoh_recommend: bool
     suggestion: str
+    # P0 修复：AI 输出解析失败时置 True，表示本结果由保守降级产生，而非真实评估
+    degraded: bool = False
 
 
 class StrategyItem(BaseModel):
@@ -68,6 +70,9 @@ class DecisionReport(BaseModel):
     scene_result: Optional[SceneResult] = None  # 新增：场景策略结果
     persona_results: Optional[List[dict]] = None  # Phase 4.2 新增：各分身原始结果
     conflict_detected: bool = False               # Phase 4.2 新增：是否检测到分身意见分歧
+    # P0 新增：风险 Agent 输出不可信（解析失败/字段缺失/非法取值）时置 True，
+    # 供前端区分「真实的清零风险」与「风险校验降级」，避免把降级当成真实评估
+    risk_degraded: bool = False
 
 
 class FastDecisionReport(BaseModel):
@@ -135,15 +140,30 @@ class NewFactorProposal(BaseModel):
     data_insufficient: bool = False  # 数据是否不充分（<3条支持）
 
 
+class AddFactorRequest(BaseModel):
+    """
+    新增能力因子的请求体（用户在复盘摘要卡片中确认后提交）。
+
+    P0 修复：该端点原先用裸标量参数声明，FastAPI 会解析成 query string，
+    而客户端（含鸿蒙前端）提交的是 JSON body，导致恒定 422，
+    「新因子提议 → 用户接受」这条链路实际不可达。
+    """
+    factor_name: str
+    value: float
+    basis: str = ""
+
+
 class ArchiveReport(BaseModel):
     """复盘归档Agent输出的复盘报告"""
     decision_id: int            # 关联的决策记录ID
     initial_f_star: float       # 初始f*
     feedback_type: str          # 用户反馈类型
     deviation_analysis: str     # 偏差分析文字
-    factor_updates: dict        # 能力因子变化，如 {"考试备战能力": {"old": 0.85, "new": 0.88}}
+    factor_updates: dict        # 能力因子变化（仅含实际写入的项），如 {"考试备战能力": {"old": 0.85, "new": 0.88}}
     new_factor_proposal: Optional[NewFactorProposal] = None
     reusable_pattern: Optional[str] = None  # 可复用模式提取
+    # P0 修复：能力因子写入守卫的拒绝/钳制记录，便于排查「AI 提议了但没生效」的原因
+    guard_rejections: List[str] = []
 
 
 # ==========================================
