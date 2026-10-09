@@ -395,6 +395,28 @@ def get_all_decision_ids() -> List[int]:
     conn.close()
     return [row["id"] for row in rows]
 
+
+def get_decision_records_with_report() -> List[dict]:
+    """
+    获取全部决策记录，并联结出其对应的系统报告 JSON（messages.content）。
+
+    L3 系统自校正需要审视历史决策的完整内容（冲突标记、风险降级、场景识别等），
+    这些字段只存在于落库的报告 JSON 里，decision_records 表本身没有对应列。
+    报告可能缺失（消息被删除），此时 report_json 为 None，由调用方容错处理。
+    """
+    conn = _get_connection()
+    rows = conn.execute("""
+        SELECT d.id, d.conversation_id, d.message_id, d.scenario,
+               d.p, d.q, d.b, d.f_star, d.scenario_type, d.loop_type,
+               d.feedback_type, d.feedback_text, d.created_at,
+               m.content AS report_json
+        FROM decision_records d
+        LEFT JOIN messages m ON m.id = d.message_id
+        ORDER BY d.created_at ASC, d.id ASC
+    """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
 # ==========================================
 # phase4.2 分身操作
 # ==========================================

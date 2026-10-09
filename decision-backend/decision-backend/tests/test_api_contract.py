@@ -87,6 +87,41 @@ class TestAddFactorContract(unittest.TestCase):
         self.assertEqual(resp.status_code, 422)
 
 
+class TestSystemAuditEndpoint(unittest.TestCase):
+    """L3 系统自校正：汇总审计接口必须是只读且结构完整的。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+        cls.client.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def test_audit_returns_expected_shape(self):
+        resp = self.client.get("/api/system-audit")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        for key in ("generated_at", "window", "totals", "decision_accuracy",
+                    "loop_distribution", "recommendation_mix", "by_scenario_type",
+                    "by_loop_type", "quality", "mux_parameters", "capability_profile",
+                    "limitations"):
+            self.assertIn(key, body, f"缺少字段 {key}")
+        self.assertTrue(body["limitations"], "能力边界必须随结果返回")
+
+    def test_audit_is_read_only(self):
+        """审计不得产生决策记录或消息。"""
+        import storage
+        before = len(storage.get_all_decision_ids())
+        convs_before = len(storage.get_conversations())
+
+        self.client.get("/api/system-audit")
+
+        self.assertEqual(len(storage.get_all_decision_ids()), before)
+        self.assertEqual(len(storage.get_conversations()), convs_before)
+
+
 class TestConversationDeletePurgesVectors(unittest.TestCase):
     """P0-5 契约：删除对话/清空数据时必须同步清理向量。"""
 

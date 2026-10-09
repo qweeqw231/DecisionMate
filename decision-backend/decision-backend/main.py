@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+import asyncio
 import json
+import logging
 import re
 from typing import List
 
@@ -44,6 +46,7 @@ from vector_store import (
     delete_decision_vectors,  # P0 新增
 )
 from agent_core.archive_agent import run_archive
+from audit import build_system_audit  # L3 系统自校正汇总
 
 
 app = FastAPI(
@@ -716,6 +719,24 @@ async def api_add_factor(body: AddFactorRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok", "factor_name": name, "value": safe_value}
+
+
+# ==========================================
+# Phase 5（L3 系统自校正）：历史决策汇总审计
+# ==========================================
+
+@app.get("/api/system-audit")
+async def api_system_audit():
+    """
+    汇总系统运行以来的决策数据，供用户审视系统是否存在系统性偏差。
+
+    架构 6.4：L3 反馈不由系统自动触发，而是由用户主动启动或定期触发；
+    元认知调度器展示汇总数据，用户据此亲手调整底层参数。
+
+    只读接口：不修改任何数据、不触发任何 Agent 调用、不消耗大模型额度。
+    汇总逻辑见 audit.py，并对数据能力边界做了如实标注（limitations）。
+    """
+    return await asyncio.to_thread(build_system_audit)
 
 
 # ==========================================
