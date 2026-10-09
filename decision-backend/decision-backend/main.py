@@ -43,7 +43,6 @@ from vector_store import (
     delete_decision_vectors,  # P0 新增
 )
 from agent_core.archive_agent import run_archive
-from factor_guard import validate_new_factor
 
 
 app = FastAPI(
