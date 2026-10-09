@@ -138,6 +138,57 @@ class TestRangeAndType(unittest.TestCase):
         self.assertAlmostEqual(accepted["风险偏好"], 1.0, places=4)
 
 
+class TestOutOfRangeBaseline(unittest.TestCase):
+    """
+    回归：当前值本身已越界时，步长窗口会把新值重新拖出 [0,1]。
+
+    原实现先做范围钳制、再做步长钳制，且不重新钳制，
+    于是 clamp(clamp(v), current±0.05) 可以产生越界结果。
+    """
+
+    def test_out_of_range_high_baseline_cannot_produce_illegal_value(self):
+        accepted, _ = sanitize_factor_updates({"x": 1.5}, {"x": 0.5})
+        self.assertGreaterEqual(accepted["x"], 0.0)
+        self.assertLessEqual(accepted["x"], 1.0)
+        self.assertAlmostEqual(accepted["x"], 0.5, places=4)
+
+    def test_out_of_range_low_baseline_cannot_produce_illegal_value(self):
+        accepted, _ = sanitize_factor_updates({"x": -0.2}, {"x": 0.9})
+        self.assertGreaterEqual(accepted["x"], 0.0)
+        self.assertLessEqual(accepted["x"], 1.0)
+        self.assertAlmostEqual(accepted["x"], 0.9, places=4)
+
+    def test_repeated_updates_from_out_of_range_baseline_stay_legal(self):
+        profile = {"x": 1.2}
+        for _ in range(5):
+            accepted, _ = sanitize_factor_updates(profile, {"x": 0.7})
+            self.assertGreaterEqual(accepted["x"], 0.0)
+            self.assertLessEqual(accepted["x"], 1.0, "写出的值绝不允许越界")
+            profile["x"] = accepted["x"]
+
+    def test_valid_baseline_still_subject_to_step_limit(self):
+        """越界基线走修复分支，合法基线仍必须受 ±MAX_STEP 约束。"""
+        accepted, _ = sanitize_factor_updates({"x": 0.50}, {"x": 0.99})
+        self.assertAlmostEqual(accepted["x"], 0.55, places=4)
+
+
+class TestHugeIntegerDoesNotRaise(unittest.TestCase):
+    """回归：is_numeric 是判断函数，绝不能抛异常（超大整数曾导致整轮归档中止）。"""
+
+    def test_is_numeric_returns_false_for_huge_int(self):
+        self.assertFalse(is_numeric(10 ** 400))
+
+    def test_sanitize_rejects_huge_int_without_raising(self):
+        accepted, rejections = sanitize_factor_updates(PROFILE, {"考试备战能力": 10 ** 400})
+        self.assertNotIn("考试备战能力", accepted)
+        self.assertTrue(rejections)
+
+    def test_huge_current_value_does_not_raise(self):
+        accepted, _ = sanitize_factor_updates({"考试备战能力": 10 ** 400}, {"考试备战能力": 0.5})
+        self.assertGreaterEqual(accepted["考试备战能力"], 0.0)
+        self.assertLessEqual(accepted["考试备战能力"], 1.0)
+
+
 class TestValidateNewFactor(unittest.TestCase):
     def test_accepts_and_clamps(self):
         name, value = validate_new_factor("  抗压能力 ", 1.4)

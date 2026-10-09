@@ -26,8 +26,9 @@ ARCHIVE_SYSTEM_PROMPT 要求「调整幅度控制在 ±0.05 以内」，但代�
 2. 值必须是有限数值，bool 不算数值（True 会被误当成 1.0）。
 3. 值被钳制到 [FACTOR_MIN, FACTOR_MAX]。
 4. 单次更新相对当前值的幅度不超过 MAX_STEP，与 Prompt 中的约束保持一致。
-5. 当前值不是数值（历史脏数据，如 "偏激进"）时跳过步长限制，允许一次性写入
-   合法数值以完成修复，但仍受取值范围约束。
+5. 当前值本身就不合法（不是数值，如 "偏激进"；或已越界，如 1.5）时，视作历史脏
+   数据，跳过步长限制以允许一次性修复，但写入值仍受取值范围约束；且无论走哪条
+   分支，最终都会再钳制一次，确保写出的值一定落在 [FACTOR_MIN, FACTOR_MAX] 内。
 """
 from __future__ import annotations
 
@@ -54,12 +55,20 @@ def is_factor_key(key: Any) -> bool:
 
 
 def is_numeric(value: Any) -> bool:
-    """有限数值判定。bool 显式排除（isinstance(True, int) 为真，但其语义不是数值）。"""
+    """
+    有限数值判定。bool 显式排除（isinstance(True, int) 为真，但其语义不是数值）。
+
+    注意：判断函数本身绝不能抛异常。JSON 里一个超大整数（如 10**400）会让
+    float() 抛 OverflowError，若任其逃逸会中止整轮复盘归档。
+    """
     if isinstance(value, bool):
         return False
     if not isinstance(value, (int, float)):
         return False
-    return math.isfinite(float(value))
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -114,15 +123,28 @@ def sanitize_factor_updates(
             notes.append(f"越界 {value} → {bounded}")
 
         current = current_profile.get(name)
-        if is_numeric(current):
+        # 只有「当前值是合法数值且本来就在取值范围内」时才施加步长限制。
+        # 若当前值本身已越界（历史脏数据），按修复处理：跳过步长限制，
+        # 否则步长窗口 [current-0.05, current+0.05] 会把新值重新拖回越界区间。
+        current_is_valid_baseline = (
+            is_numeric(current) and FACTOR_MIN <= float(current) <= FACTOR_MAX
+        )
+        if current_is_valid_baseline:
             low = float(current) - MAX_STEP
             high = float(current) + MAX_STEP
             stepped = clamp(bounded, low, high)
-            if stepped != bounded:
+            if abs(stepped - bounded) > 1e-12:
                 notes.append(f"超出单次步长 ±{MAX_STEP}：{bounded} → {stepped:.4f}")
             bounded = stepped
+        elif is_numeric(current):
+            notes.append(
+                f"当前值 {current!r} 已越界，按脏数据修复处理并跳过步长限制"
+            )
         else:
             notes.append(f"当前值非数值（{current!r}），按修复处理并跳过步长限制")
+
+        # 最终不变量：无论走哪条分支，写出的值必须落在 [FACTOR_MIN, FACTOR_MAX]
+        bounded = clamp(bounded, FACTOR_MIN, FACTOR_MAX)
 
         accepted[name] = round(bounded, 4)
         if notes:

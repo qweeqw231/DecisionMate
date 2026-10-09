@@ -11,10 +11,15 @@ import vector_store  # noqa: E402
 
 
 class _CountingCollection:
-    def __init__(self, n=5):
+    """最小可用的 Chroma 集合替身，忠实支持 get(ids=...) / delete(ids=...)。"""
+
+    def __init__(self, n=5, ids=("1", "2")):
         self._n = n
+        self.ids = list(ids)
         self.deleted = []
         self.raise_on_query = False
+        self.raise_on_get = False
+        self.raise_on_delete = False
 
     def count(self):
         return self._n
@@ -24,11 +29,18 @@ class _CountingCollection:
             raise RuntimeError("Chroma 查询失败")
         return {"ids": [["1"]], "distances": [[0.1]], "metadatas": [[{"p": 0.9}]]}
 
-    def get(self, include=None):
-        return {"ids": ["1", "2"]}
+    def get(self, ids=None, include=None):
+        if self.raise_on_get:
+            raise RuntimeError("读取失败")
+        if ids is None:
+            return {"ids": list(self.ids)}
+        return {"ids": [i for i in ids if i in self.ids]}
 
     def delete(self, ids):
+        if self.raise_on_delete:
+            raise RuntimeError("删除失败")
         self.deleted.extend(ids)
+        self.ids = [i for i in self.ids if i not in ids]
 
 
 class VectorHarness:
@@ -82,11 +94,25 @@ class TestDeleteDecisions(unittest.TestCase):
     """P0-5：删除向量是清理孤儿的关键路径。"""
 
     def test_deletes_matching_ids(self):
-        collection = _CountingCollection()
+        collection = _CountingCollection(ids=("7", "8", "9"))
         with VectorHarness(collection):
             removed = vector_store.delete_decision_vectors([7, 8, 9])
         self.assertEqual(removed, 3)
         self.assertEqual(sorted(collection.deleted), ["7", "8", "9"])
+
+    def test_counts_only_ids_that_actually_exist(self):
+        """回归：原先无条件返回 len(ids)，日志会谎报清理量。"""
+        collection = _CountingCollection(ids=("7",))
+        with VectorHarness(collection):
+            removed = vector_store.delete_decision_vectors([7, 8, 9])
+        self.assertEqual(removed, 1)
+        self.assertEqual(collection.deleted, ["7"])
+
+    def test_missing_ids_report_zero(self):
+        collection = _CountingCollection(ids=("1",))
+        with VectorHarness(collection):
+            self.assertEqual(vector_store.delete_decision_vectors([42]), 0)
+        self.assertEqual(collection.deleted, [])
 
     def test_empty_input_is_a_noop(self):
         collection = _CountingCollection()
@@ -95,17 +121,15 @@ class TestDeleteDecisions(unittest.TestCase):
         self.assertEqual(collection.deleted, [])
 
     def test_delete_failure_is_swallowed(self):
-        class Broken(_CountingCollection):
-            def delete(self, ids):
-                raise RuntimeError("删除失败")
-        with VectorHarness(Broken()):
+        collection = _CountingCollection(ids=("1",))
+        collection.raise_on_delete = True
+        with VectorHarness(collection):
             self.assertEqual(vector_store.delete_decision_vectors([1]), 0)
 
     def test_get_all_ids_failure_returns_empty(self):
-        class Broken(_CountingCollection):
-            def get(self, include=None):
-                raise RuntimeError("读取失败")
-        with VectorHarness(Broken()):
+        collection = _CountingCollection()
+        collection.raise_on_get = True
+        with VectorHarness(collection):
             self.assertEqual(vector_store.get_all_decision_vector_ids(), [])
 
 

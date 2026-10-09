@@ -22,8 +22,9 @@ from models.schemas import QuantResult, RiskResult, DecisionReport
 
 # 触发强制降仓的「重注」阈值：f* 高于此值且风险 Agent 报清零风险时，视为实质性冲突
 HEAVY_BET_THRESHOLD = 0.5
-# 冲突时的降仓系数与下限（沿用 Phase 1 的量级：f* × 0.3，且不低于 -0.3）
+# 冲突时的降仓系数
 SURVIVAL_CLAMP_FACTOR = 0.3
+# 降仓下限（防御性；由于触发条件为 f* > 0.5，实际取值恒 > 0.15，此下限不会生效）
 SURVIVAL_CLAMP_FLOOR = -0.3
 
 
@@ -43,6 +44,24 @@ def apply_survival_constraint(f_star: float, risk_result: RiskResult) -> tuple[f
         )
         return adjusted, True, note
     return f_star, False, ""
+
+
+def risk_advisory(risk_result: RiskResult, survival_conflict: bool) -> str:
+    """
+    统一的生存/过载风险提示文本，供单分身与多分身两条融合链路共用。
+
+    P0 修复：原先这段提示只写在 merge() 里，多分身链路（真实主链路）完全没有，
+    风险 Agent 的 overload_signal 在主链路上被静默丢弃。
+    同时修正措辞：只有确实报了清零风险时才说「存在清零风险」，
+    否则报告会与 risk_opinion 中「清零风险：否」自相矛盾。
+    """
+    if survival_conflict or risk_result.bankruptcy_risk:
+        return "风险警告：存在清零风险，生存优先硬约束已激活。请勿突破自身底线。"
+    if risk_result.risk_level == "高":
+        return "风险警告：风险等级为高，建议谨慎投入并保留余量。"
+    if risk_result.overload_signal:
+        return "健康提醒：检测到过载信号。参照5月13号案例，一次主动休整胜过十次被动崩溃。"
+    return ""
 
 
 def degraded_note(risk_result: RiskResult) -> str:
@@ -108,11 +127,10 @@ def merge(quant_result: QuantResult, risk_result: RiskResult, scene_result=None)
         recommendation_parts.append("综合建议：主动撤出，保护核心资产。")
         recommendation_parts.append(f"凯利公式计算结果为负(f*={adjusted_f_star:.2f})，此决策不值得投入。将精力留给更值得的战场。")
 
-    # 融合风险建议
-    if final_risk_level == "高":
-        recommendation_parts.append("风险警告：存在清零风险，生存优先硬约束已激活。请勿突破自身底线。")
-    elif risk_result.overload_signal:
-        recommendation_parts.append("健康提醒：检测到过载信号。参照5月13号案例，一次主动休整胜过十次被动崩溃。")
+    # 融合风险建议（与多分身链路共用同一份提示逻辑）
+    advisory = risk_advisory(risk_result, survival_conflict)
+    if advisory:
+        recommendation_parts.append(advisory)
 
     if conflict_detected:
         recommendation_parts.append(conflict_note)
@@ -132,5 +150,6 @@ def merge(quant_result: QuantResult, risk_result: RiskResult, scene_result=None)
         calculation_detail=quant_result.reasoning,
         scene_result=scene_result,  # Phase 2 新增
         # P0 修复：原先未回填该字段，单分身链路即使触发了硬约束也不会亮冲突标记
-        conflict_detected=conflict_detected
+        conflict_detected=conflict_detected,
+        risk_degraded=risk_result.degraded
     )

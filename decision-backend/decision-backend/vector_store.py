@@ -146,18 +146,22 @@ def get_all_decision_vector_ids() -> list[str]:
 
 def delete_decision_vectors(decision_ids) -> int:
     """
-    删除指定决策 ID 对应的向量。
+    删除指定决策 ID 对应的向量，返回**实际存在并已删除**的数量。
 
     P0 修复：原先删除对话/清空数据只清 SQLite，Chroma 中的向量会变成孤儿，
-    却仍会被检索出来当作「历史参考」注入 Prompt。返回实际删除的数量。
+    却仍会被检索出来当作「历史参考」注入 Prompt。
+    返回真实删除数（先查后删），避免日志谎报清理量。
     """
     ids = [str(i) for i in decision_ids]
     if not ids:
         return 0
     try:
         collection = get_decision_collection()
-        collection.delete(ids=ids)
-        return len(ids)
+        existing = collection.get(ids=ids)["ids"]
+        if not existing:
+            return 0
+        collection.delete(ids=existing)
+        return len(existing)
     except Exception as e:  # noqa: BLE001 —— 清理失败不应影响删除操作本身
         logging.warning("[向量库] 删除向量失败（ids=%s）：%s", ids, e)
         return 0

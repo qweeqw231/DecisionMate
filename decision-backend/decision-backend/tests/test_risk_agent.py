@@ -54,12 +54,14 @@ class TestNormalParsing(unittest.TestCase):
         self.assertEqual(result.risk_level, "低")
         self.assertFalse(result.degraded)
 
-    def test_illegal_risk_level_is_treated_conservatively(self):
+    def test_illegal_risk_level_is_treated_conservatively_and_marked_degraded(self):
         result = assess_with(
             '{"risk_level": "极高", "bankruptcy_risk": false, "overload_signal": false,'
             ' "zoh_recommend": false, "suggestion": "x"}'
         )
         self.assertEqual(result.risk_level, "高")
+        # 模型没有按约定输出合法等级，结果部分不可信，必须标记降级
+        self.assertTrue(result.degraded)
 
     def test_missing_bankruptcy_field_defaults_conservative(self):
         result = assess_with('{"risk_level": "低", "suggestion": "x"}')

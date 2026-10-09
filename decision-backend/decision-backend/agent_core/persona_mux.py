@@ -16,7 +16,7 @@ P0 修复说明
 from typing import List
 
 from models.schemas import DecisionReport, PersonaVote, RiskResult
-from agent_core.mux import apply_survival_constraint, degraded_note
+from agent_core.mux import apply_survival_constraint, degraded_note, risk_advisory
 
 # 分身意见分歧阈值：任意两个分身的 f* 差异超过该值即标记冲突
 PERSONA_CONFLICT_THRESHOLD = 0.4
@@ -78,6 +78,11 @@ def merge_personas(persona_results: List[dict], weighted_f_star: float,
         recommendation += "\n\n⚠️ " + survival_note
     if persona_conflict:
         recommendation += "\n\n⚠️ 分身意见分歧：不同分身的建议存在显著差异，请仔细审阅各分身独立意见后再做决定。"
+    # P0 补强：风险 Agent 的生存/过载提示原先只存在于单分身链路，
+    # 多分身主链路完全丢弃，导致 overload_signal 静默失效。
+    advisory = risk_advisory(risk_result, survival_conflict)
+    if advisory:
+        recommendation += "\n\n" + advisory
     note = degraded_note(risk_result)
     if note:
         recommendation += "\n\n" + note
@@ -100,5 +105,6 @@ def merge_personas(persona_results: List[dict], weighted_f_star: float,
         calculation_detail="多分身加权融合：各分身独立估算 p、b、f*，按权重加权平均。",
         scene_result=scene_result,
         persona_results=persona_results,  # 新增字段
-        conflict_detected=persona_conflict or survival_conflict
+        conflict_detected=persona_conflict or survival_conflict,
+        risk_degraded=risk_result.degraded
     )

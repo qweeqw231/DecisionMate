@@ -14,9 +14,9 @@ from agent_core.persona_mux import merge_personas  # noqa: E402
 from models.schemas import QuantResult, RiskResult  # noqa: E402
 
 
-def risk(level="低", bankruptcy=False, degraded=False, suggestion="风险说明"):
+def risk(level="低", bankruptcy=False, degraded=False, suggestion="风险说明", overload=False):
     return RiskResult(risk_level=level, bankruptcy_risk=bankruptcy,
-                      overload_signal=False, zoh_recommend=False,
+                      overload_signal=overload, zoh_recommend=False,
                       suggestion=suggestion, degraded=degraded)
 
 
@@ -54,9 +54,9 @@ class TestApplySurvivalConstraint(unittest.TestCase):
         self.assertFalse(conflict)
         self.assertAlmostEqual(adjusted, 0.9, places=4)
 
-    def test_floor_is_respected(self):
+    def test_clamp_value_is_exact(self):
         adjusted, _, _ = apply_survival_constraint(0.6, risk(bankruptcy=True, level="高"))
-        self.assertGreaterEqual(adjusted, -0.3)
+        self.assertAlmostEqual(adjusted, 0.6 * SURVIVAL_CLAMP_FACTOR, places=4)
 
 
 class TestSinglePersonaMerge(unittest.TestCase):
@@ -140,6 +140,51 @@ class TestMultiPersonaMerge(unittest.TestCase):
         )
         self.assertEqual(len(report.persona_results), 2)
         self.assertEqual(report.persona_results[0]["name"], "分身1")
+
+
+class TestRiskAdvisoryWording(unittest.TestCase):
+    """回归：报告不应在 risk_opinion 说「清零风险：否」的同时声称「存在清零风险」。"""
+
+    def test_high_level_without_bankruptcy_uses_generic_wording(self):
+        report = merge(quant(0.3), risk(level="高", bankruptcy=False))
+        self.assertIn("风险等级为高", report.recommendation)
+        self.assertNotIn("存在清零风险", report.recommendation)
+        self.assertIn("清零风险：否", report.risk_opinion)
+
+    def test_bankruptcy_uses_zero_out_wording(self):
+        report = merge(quant(0.9), risk(level="高", bankruptcy=True))
+        self.assertIn("存在清零风险", report.recommendation)
+        self.assertIn("清零风险：是", report.risk_opinion)
+
+    def test_overload_signal_surfaces_on_both_paths(self):
+        single = merge(quant(0.3), risk(level="低", bankruptcy=False, overload=True))
+        self.assertIn("过载信号", single.recommendation)
+
+        multi = merge_personas(
+            persona_results=persona_results([0.3]), weighted_f_star=0.3,
+            risk_result=risk(level="低", bankruptcy=False, overload=True),
+            scenario_type="通用",
+        )
+        # P0 补强：原先多分身主链路完全丢弃 overload_signal
+        self.assertIn("过载信号", multi.recommendation)
+
+
+class TestStructuredDegradedFlag(unittest.TestCase):
+    def test_single_persona_sets_risk_degraded(self):
+        report = merge(quant(0.3), risk(level="高", bankruptcy=True, degraded=True))
+        self.assertTrue(report.risk_degraded)
+
+    def test_multi_persona_sets_risk_degraded(self):
+        report = merge_personas(
+            persona_results=persona_results([0.4]), weighted_f_star=0.4,
+            risk_result=risk(level="高", bankruptcy=True, degraded=True),
+            scenario_type="通用",
+        )
+        self.assertTrue(report.risk_degraded)
+
+    def test_not_degraded_by_default(self):
+        report = merge(quant(0.3), risk(level="低"))
+        self.assertFalse(report.risk_degraded)
 
 
 class TestSharedImplementation(unittest.TestCase):

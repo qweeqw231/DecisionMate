@@ -22,7 +22,8 @@ from models.schemas import (
     FeedbackRequest, ArchiveReport,   # Phase 3.3 新增
     PersonaCreate, PersonaUpdate, PersonaResponse,   # Phase 4.2 新增
     QuantResult,
-    ConversationPersonasUpdate  # Phase 4.2.3 新增
+    ConversationPersonasUpdate,  # Phase 4.2.3 新增
+    AddFactorRequest  # P0 修复：新增因子改为 JSON 请求体
 )
 from agent_core.quant_agent import analyze
 from agent_core.risk_agent import assess
@@ -405,9 +406,11 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             yield "stage", {"stage": "merge"}
             report = await asyncio.to_thread(merge, quant_result, risk_result, scene_result)
             report.loop_type = "slow"
+            # P0 修复：记录仲裁后的 f*（report.f_star），与多分身链路保持一致；
+            # 决策记录应反映「实际给出的建议」，而非仲裁前的原始估算。
             record_params = {
                 "p": quant_result.p, "q": quant_result.q, "b": quant_result.b,
-                "f_star": quant_result.f_star, "scenario_type": quant_result.scenario_type
+                "f_star": report.f_star, "scenario_type": quant_result.scenario_type
             }
         else:
             # 2. 检索历史相似决策（仅一次）
@@ -556,6 +559,18 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
                 except Exception as e:
                     logging.error(f"[向量存储失败] decision_id={decision_id}, error={e}")
 
+                # P0 补强：本线程与用户操作存在竞态——若决策记录在写入期间已被删除
+                # （用户刚删了对话/清空数据），清理逻辑查不到这条向量，会留下永久孤儿。
+                # 落库后复查一次并回收。
+                try:
+                    if get_decision_record(decision_id) is None:
+                        removed = delete_decision_vectors([decision_id])
+                        logging.info(
+                            f"[向量清理] 决策 {decision_id} 已被删除，回收刚写入的向量（{removed} 条）"
+                        )
+                except Exception as e:
+                    logging.warning(f"[向量清理] 复查决策 {decision_id} 失败：{e}")
+
             threading.Thread(target=vector_tasks, daemon=True).start()
 
     logging.info(f"[消息成功] conv_id={conv_id}, loop_type={report.loop_type}")
@@ -637,15 +652,20 @@ async def api_submit_feedback(conv_id: int, msg_id: int, body: FeedbackRequest):
         if is_fast_loop(scenario):
             raise HTTPException(status_code=400, detail="快回路消息不支持反馈")
 
+        # P0 修复：重建路径原先直接落原始 f*，且把 analyze/assess/analyze_scene
+        # 的结果全部丢弃。这里改为与主链路一致——套用同一份生存优先仲裁后落库，
+        # 使 decision_records.f_star 的语义在所有路径下统一。
+        from agent_core.mux import apply_survival_constraint
         quant_result = analyze(scenario)
         risk_result = assess(scenario, quant_result)
         from agent_core.scene_agent import analyze_scene
         scene_result = analyze_scene(scenario)
+        arbitrated_f_star, _, _ = apply_survival_constraint(quant_result.f_star, risk_result)
 
         decision_id = add_decision_record(
             conv_id=conv_id, msg_id=msg_id, scenario=scenario,
             p=quant_result.p, q=quant_result.q, b=quant_result.b,
-            f_star=quant_result.f_star,
+            f_star=arbitrated_f_star,
             scenario_type=quant_result.scenario_type, loop_type="slow"
         )
         record = get_decision_record(decision_id)
@@ -681,15 +701,18 @@ async def api_get_profile():
 
 
 @app.post("/api/user-profile/add-factor")
-async def api_add_factor(factor_name: str, value: float, basis: str):
+async def api_add_factor(body: AddFactorRequest):
     """
     用户确认后添加新因子。
 
-    P0 修复：名称与取值范围经 validate_new_factor 校验，非法输入返回 400 而不是 500，
-    并且会被钳制到 [0, 1]，避免写入越界值污染后续 Prompt。
+    P0 修复：
+    - 改为接收 JSON 请求体（原先裸标量参数被 FastAPI 当作 query string，
+      客户端提交 JSON 恒定 422，"新因子提议可被接受"这条链路实际不可达）。
+    - 名称与取值范围经 validate_new_factor 校验，非法输入返回 400 而不是 500，
+      且会被钳制到 [0, 1]，避免越界值污染后续 Prompt。
     """
     try:
-        name, safe_value = add_profile_factor(factor_name, value, basis)
+        name, safe_value = add_profile_factor(body.factor_name, body.value, body.basis)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok", "factor_name": name, "value": safe_value}

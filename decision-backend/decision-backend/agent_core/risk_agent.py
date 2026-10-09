@@ -135,8 +135,9 @@ def assess(scenario: str, quant_result: QuantResult) -> RiskResult:
 
     raw_level = data.get("risk_level")
     risk_level = str(raw_level).strip() if raw_level else "高"
-    if risk_level not in VALID_RISK_LEVELS:
-        logging.warning("[风险Agent] 非法 risk_level=%r，按保守处理为「高」", risk_level)
+    invalid_level = risk_level not in VALID_RISK_LEVELS
+    if invalid_level:
+        logging.warning("[风险Agent] 非法 risk_level=%r，按保守处理为「高」并标记降级", risk_level)
         risk_level = "高"
 
     return RiskResult(
@@ -145,5 +146,7 @@ def assess(scenario: str, quant_result: QuantResult) -> RiskResult:
         bankruptcy_risk=as_bool(data.get("bankruptcy_risk"), default=True),
         overload_signal=as_bool(data.get("overload_signal"), default=False),
         zoh_recommend=as_bool(data.get("zoh_recommend"), default=False),
-        suggestion=str(data.get("suggestion") or "")
+        suggestion=str(data.get("suggestion") or ""),
+        # 模型没按约定输出合法等级，说明结果部分不可信，同样标记降级
+        degraded=invalid_level,
     )
