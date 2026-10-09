@@ -79,6 +79,33 @@ export interface DecisionReport {
   risk_degraded?: boolean
   /** 本次检索到的历史相似决策（此前只注入 Prompt，用户看不到） */
   history_references?: HistoryReference[] | null
+  /** 关系边界的语义判定未能完成：本次放行不是因为确认不越界 */
+  boundary_check_degraded?: boolean
+}
+
+// 关系边界关机（架构 5.3.4）：不做量化，只把场景交还给用户
+export interface BoundaryReport {
+  loop_type: 'boundary'
+  shutdown_message: string
+  reason: string
+  category: string
+  matched_rule?: string | null
+  persisted: boolean
+  note: string
+}
+
+export interface BoundaryConfig {
+  enabled: boolean
+  use_semantic_check: boolean
+  hard_patterns: string[]
+  shutdown_message: string
+  skip_persistence: boolean
+}
+
+export interface BoundaryConfigMeta {
+  current: BoundaryConfig
+  defaults: BoundaryConfig
+  updated_at: string | null
 }
 
 // 快回路报告
@@ -88,7 +115,7 @@ export interface FastDecisionReport {
   note?: string
 }
 
-export type AnyReport = DecisionReport | FastDecisionReport
+export type AnyReport = DecisionReport | FastDecisionReport | BoundaryReport
 
 export interface Conversation {
   id: number
@@ -237,6 +264,8 @@ export interface SystemAudit {
   mux_parameters: Record<string, number>
   data_quality: { scenario_type_variants: ScenarioTypeVariants[] }
   capability_profile: Record<string, unknown>
+  /** 关系边界配置（架构 6.4 的「用户可调整底层参数」） */
+  boundary_config: BoundaryConfigMeta
   /** 数据能力边界：后端如实标注，前端必须原样展示 */
   limitations: string[]
 }

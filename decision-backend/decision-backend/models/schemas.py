@@ -91,6 +91,8 @@ class DecisionReport(BaseModel):
     risk_degraded: bool = False
     # P1 新增：本次检索到的历史相似决策（Phase 3.3 的「历史参考」展示）
     history_references: Optional[List[HistoryReference]] = None
+    # P1-4 新增：关系边界的语义判定未能完成（本次「放行」不是因为确认不越界）
+    boundary_check_degraded: bool = False
 
 
 class FastDecisionReport(BaseModel):
@@ -98,6 +100,36 @@ class FastDecisionReport(BaseModel):
     loop_type: str = "fast"
     recommendation: str
     note: str = "此建议基于直觉和经验法则，未经过完整的量化分析。如需深度分析，请提供更多细节。"
+
+
+# ==========================================
+# P1-4 新增：关系边界（伦理关机）
+# ==========================================
+
+class BoundaryVerdict(BaseModel):
+    """关系边界检查结论"""
+    is_boundary: bool
+    category: str = "none"        # hard_rule / semantic / none
+    matched_rule: Optional[str] = None
+    reason: str = ""
+    # 语义判定调用失败时置 True：说明这次「放行」不是因为确实不越界，而是没查成
+    degraded: bool = False
+
+
+class BoundaryReport(BaseModel):
+    """
+    命中关系边界时的输出（架构 5.3.4）。
+
+    这不是一次「分析结果」，而是系统主动关机：不做量化、不给建议，
+    只把场景交还给用户的直觉与真诚。
+    """
+    loop_type: str = "boundary"
+    shutdown_message: str
+    reason: str
+    category: str
+    matched_rule: Optional[str] = None
+    persisted: bool = False
+    note: str = "此场景未被记录：消息、决策记录与向量库均未写入。"
 
 
 # ==========================================

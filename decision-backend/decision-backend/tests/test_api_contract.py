@@ -228,5 +228,149 @@ class TestReportSchemaFields(unittest.TestCase):
             HistoryReference(decision_id=9, similarity=0.6, p="很高")
 
 
+class TestBoundaryConfigApi(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+        cls.client.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def setUp(self):
+        import boundary_config as bc
+        bc.reset_config()
+
+    def tearDown(self):
+        import boundary_config as bc
+        bc.reset_config()
+
+    def test_get_returns_current_defaults_and_timestamp(self):
+        body = self.client.get("/api/boundary-config").json()
+        for key in ("current", "defaults", "updated_at"):
+            self.assertIn(key, body)
+        self.assertTrue(body["current"]["enabled"])
+        self.assertTrue(body["current"]["skip_persistence"])
+
+    def test_update_round_trip(self):
+        resp = self.client.post("/api/boundary-config",
+                                json={"enabled": False, "hard_patterns": ["自定义规则"]})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        config = resp.json()["config"]
+        self.assertFalse(config["enabled"])
+        self.assertEqual(config["hard_patterns"], ["自定义规则"])
+
+        again = self.client.get("/api/boundary-config").json()["current"]
+        self.assertFalse(again["enabled"])
+        self.assertEqual(again["hard_patterns"], ["自定义规则"])
+
+    def test_invalid_payload_returns_400(self):
+        for payload in ({"nope": 1}, {"enabled": "yes"}, {"hard_patterns": "追她"},
+                        {"shutdown_message": ""}):
+            with self.subTest(payload=payload):
+                resp = self.client.post("/api/boundary-config", json=payload)
+                self.assertEqual(resp.status_code, 400, resp.text)
+
+    def test_reset_restores_defaults(self):
+        self.client.post("/api/boundary-config", json={"enabled": False})
+        resp = self.client.post("/api/boundary-config/reset")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(resp.json()["config"]["enabled"])
+
+    def test_audit_exposes_the_boundary_config(self):
+        """架构 6.4：伦理边界条件是「用户可调整的底层参数」之一，必须可见。"""
+        audit = self.client.get("/api/system-audit").json()
+        self.assertIn("boundary_config", audit)
+        self.assertIn("current", audit["boundary_config"])
+        self.assertIn("defaults", audit["boundary_config"])
+
+
+class TestBoundaryShutdownPrivacy(unittest.TestCase):
+    """
+    P1-4 核心保证：命中关系边界时不做量化，且**不写入任何记录**。
+    用硬规则场景（"我该不该追她"）触发，因此不会调用大模型。
+    """
+
+    BOUNDARY_SCENARIO = "我该不该追她，怎么判断成功率"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+        cls.client.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+
+    def setUp(self):
+        import boundary_config as bc
+        bc.reset_config()
+
+    def tearDown(self):
+        import boundary_config as bc
+        bc.reset_config()
+
+    def test_pipeline_shuts_down_and_persists_nothing(self):
+        import storage
+
+        conv = self.client.post("/api/conversations", json={"title": "边界测试"}).json()
+        decisions_before = len(storage.get_all_decision_ids())
+
+        resp = self.client.post(f"/api/conversations/{conv['id']}/messages",
+                                json={"scenario": self.BOUNDARY_SCENARIO})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        report = resp.json()
+
+        self.assertEqual(report["loop_type"], "boundary")
+        self.assertIn("独立意志", report["shutdown_message"])
+        self.assertFalse(report["persisted"])
+        self.assertEqual(report["category"], "hard_rule")
+        self.assertIn("未写入", report["note"])
+
+        # 隐私保证：消息、决策记录都没有落库
+        self.assertEqual(storage.get_messages(conv["id"]), [],
+                         "边界场景不得写入消息")
+        self.assertEqual(len(storage.get_all_decision_ids()), decisions_before,
+                         "边界场景不得写入决策记录")
+
+    def test_stream_endpoint_emits_boundary_stage_and_result(self):
+        conv = self.client.post("/api/conversations", json={"title": "边界流式"}).json()
+        resp = self.client.post(f"/api/conversations/{conv['id']}/messages/stream",
+                                json={"scenario": self.BOUNDARY_SCENARIO})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        # SSE 的事件类型是 stage，阶段名在 data 里
+        self.assertIn('"stage": "boundary"', resp.text)
+        self.assertIn("event: result", resp.text)
+        self.assertIn('"loop_type": "boundary"', resp.text)
+
+    def test_non_boundary_scenario_is_not_intercepted(self):
+        """正常场景不得被边界规则误伤。关闭语义判定以保证测试不访问网络。"""
+        import storage
+        import boundary_config as bc
+        from agent_core.boundary_agent import check_boundary
+
+        self.client.post("/api/boundary-config", json={"use_semantic_check": False})
+        conv = self.client.post("/api/conversations", json={"title": "非边界"}).json()
+
+        verdict = check_boundary("要不要花周末做深度复盘", bc.load_config())
+        self.assertFalse(verdict.is_boundary)
+        self.assertEqual(verdict.category, "none")
+        # 未发消息，自然没有记录（确认该接口本身不产生副作用）
+        self.assertEqual(storage.get_messages(conv["id"]), [])
+
+    def test_disabling_skip_persistence_records_the_scenario(self):
+        """用户显式关闭隐私保护时，边界场景按常规落库（配置生效）。"""
+        import storage
+        self.client.post("/api/boundary-config", json={"skip_persistence": False})
+        conv = self.client.post("/api/conversations", json={"title": "记录边界"}).json()
+
+        resp = self.client.post(f"/api/conversations/{conv['id']}/messages",
+                                json={"scenario": self.BOUNDARY_SCENARIO})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(resp.json()["persisted"])
+        self.assertEqual(len(storage.get_messages(conv["id"])), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

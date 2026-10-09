@@ -21,6 +21,15 @@
       >
         风险校验已降级
       </el-tag>
+      <el-tag
+        v-if="report.boundary_check_degraded"
+        size="small"
+        type="info"
+        effect="light"
+        class="conflict-tag"
+      >
+        边界校验未完成
+      </el-tag>
       <div class="recommendation">{{ report.recommendation }}</div>
     </div>
 

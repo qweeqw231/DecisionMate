@@ -1,4 +1,4 @@
-import type { AnyReport, DecisionReport, FastDecisionReport } from '../types'
+import type { AnyReport, BoundaryReport, DecisionReport, FastDecisionReport } from '../types'
 
 /** 安全解析 assistant 消息内容（后端存的是报告 JSON 字符串） */
 export function parseReport(content: string): AnyReport | null {
@@ -19,6 +19,15 @@ export function parseReport(content: string): AnyReport | null {
 
 export function isFastReport(r: AnyReport): r is FastDecisionReport {
   return r.loop_type === 'fast'
+}
+
+export function isBoundaryReport(r: AnyReport | null | undefined): r is BoundaryReport {
+  return !!r && r.loop_type === 'boundary'
+}
+
+/** 边界场景不落库，因此只在本地消息流里存在，刷新/切换对话即消失 */
+export function isEphemeralReport(r: AnyReport | null | undefined): boolean {
+  return isBoundaryReport(r)
 }
 
 /** 风险等级标签颜色 */

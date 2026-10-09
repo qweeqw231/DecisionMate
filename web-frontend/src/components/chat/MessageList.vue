@@ -54,6 +54,7 @@ const examples = [
 
 const stageLabels: Record<string, string> = {
   start: '正在接收请求…',
+  boundary: '正在检查关系边界…',
   fast: '直觉决策分析中…',
   quant: '量化分析中…',
   personas: '多个分身正在并行量化分析…',
@@ -63,7 +64,10 @@ const stageLabels: Record<string, string> = {
 }
 
 const hasPersonas = computed(
-  () => store.streaming.stage !== 'fast' && store.streaming.stage !== 'quant',
+  () =>
+    store.streaming.stage !== 'fast' &&
+    store.streaming.stage !== 'quant' &&
+    store.streaming.stage !== 'boundary',
 )
 const progressText = computed(() => {
   const base = stageLabels[store.streaming.stage] || '分析中…'

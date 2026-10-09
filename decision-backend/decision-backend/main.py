@@ -24,7 +24,8 @@ from models.schemas import (
     QuantResult,
     ConversationPersonasUpdate,  # Phase 4.2.3 新增
     AddFactorRequest,  # P0 修复：新增因子改为 JSON 请求体
-    HistoryReference  # P1 新增：历史参考回传
+    HistoryReference,  # P1 新增：历史参考回传
+    BoundaryReport,    # P1-4 新增：关系边界关机输出
 )
 from agent_core.quant_agent import analyze
 from agent_core.risk_agent import assess
@@ -45,8 +46,16 @@ from vector_store import (
     delete_decision_vectors,  # P0 新增
 )
 from agent_core.archive_agent import run_archive
+from agent_core.boundary_agent import check_boundary  # P1-4 关系边界
 from agent_core.json_utils import extract_json_object  # 统一的 LLM JSON 解析
 from audit import build_system_audit  # L3 系统自校正汇总
+from boundary_config import (  # P1-4 边界配置（L3 可调参数）
+    DEFAULT_SHUTDOWN_MESSAGE,
+    config_metadata as boundary_config_metadata,
+    load_config as load_boundary_config,
+    reset_config as reset_boundary_config,
+    save_config as save_boundary_config,
+)
 
 
 app = FastAPI(
@@ -155,6 +164,14 @@ async def make_decision(request: DecisionRequest):
     - 快回路：直接调用大模型输出直觉建议
     - 慢回路：量化分析 → 风险监控 → Mux融合
     """
+
+    # ==========================================
+    # 关系边界前置判定（架构 5.3.4）：与主链路保持一致
+    # ==========================================
+    boundary_cfg = load_boundary_config()
+    verdict = check_boundary(request.scenario, boundary_cfg)
+    if verdict.is_boundary:
+        return _build_boundary_report(verdict, boundary_cfg)
 
     # ==========================================
     # 元认知调度
@@ -336,6 +353,25 @@ def _sse_format(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _build_boundary_report(verdict, boundary_cfg: dict) -> BoundaryReport:
+    """
+    把边界判定结论组装成对外输出（架构 5.3.4 的固定提示）。
+
+    persisted 如实反映本次是否真的落了库，避免前端以为「没记录」其实记了。
+    """
+    skip = bool(boundary_cfg.get("skip_persistence", True))
+    return BoundaryReport(
+        shutdown_message=boundary_cfg.get("shutdown_message") or DEFAULT_SHUTDOWN_MESSAGE,
+        reason=verdict.reason,
+        category=verdict.category,
+        matched_rule=verdict.matched_rule,
+        persisted=not skip,
+        note=("此场景未被记录：消息、决策记录与向量库均未写入。"
+              if skip else
+              "注意：隐私保护已被关闭，本次对话已按常规落库。"),
+    )
+
+
 async def _agent_pipeline(conv_id: int, body: MessageCreate):
     """
     完整决策分析管线（异步生成器）。
@@ -351,10 +387,24 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
         yield "error", {"status": 404, "detail": "对话不存在"}
         return
 
-    # 1. 存储用户消息
+    # 1. 关系边界前置判定（架构 5.3.4）
+    #    必须早于一切分析与落库：命中即关机，且默认不留任何记录。
+    boundary_cfg = await asyncio.to_thread(load_boundary_config)
+    verdict = await asyncio.to_thread(check_boundary, body.scenario, boundary_cfg)
+    if verdict.is_boundary:
+        yield "stage", {"stage": "boundary"}
+        report = _build_boundary_report(verdict, boundary_cfg)
+        if not boundary_cfg.get("skip_persistence", True):
+            # 用户显式关闭了隐私保护，此时才按常规路径记录
+            await asyncio.to_thread(add_message, conv_id, "user", body.scenario)
+            await asyncio.to_thread(add_message, conv_id, "assistant", report.model_dump_json())
+        yield "result", json.loads(report.model_dump_json())
+        return
+
+    # 2. 存储用户消息
     await asyncio.to_thread(add_message, conv_id, "user", body.scenario)
 
-    # 2. 运行 Agent 分析流程
+    # 3. 运行 Agent 分析流程
     if is_fast_loop(body.scenario):
         # -------- 快回路 --------
         yield "stage", {"stage": "fast"}
@@ -533,6 +583,10 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             }
 
     # 3. 存储系统消息（完整报告 JSON），直接拿到真实 msg_id
+    # P1-4：语义边界判定失败时，把「守卫这次没查成」如实带到报告上
+    if verdict.degraded and hasattr(report, "boundary_check_degraded"):
+        report.boundary_check_degraded = True
+
     system_content = report.model_dump_json() if hasattr(report, 'model_dump_json') else json.dumps(report, default=str)
     assistant_msg = await asyncio.to_thread(add_message, conv_id, "assistant", system_content)
 
@@ -726,6 +780,35 @@ async def api_add_factor(body: AddFactorRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok", "factor_name": name, "value": safe_value}
+
+
+# ==========================================
+# P1-4 新增：关系边界配置 API（架构 6.4「用户亲手调整伦理边界触发条件」）
+# ==========================================
+
+@app.get("/api/boundary-config")
+async def api_get_boundary_config():
+    """读取关系边界配置（含默认值与最近更新时间，便于用户判断是否被改动过）。"""
+    return await asyncio.to_thread(boundary_config_metadata)
+
+
+@app.post("/api/boundary-config")
+async def api_update_boundary_config(body: dict):
+    """
+    更新关系边界配置。只接受 enabled / use_semantic_check / hard_patterns /
+    shutdown_message / skip_persistence 五个字段，其余一律 400。
+    """
+    try:
+        updated = await asyncio.to_thread(save_boundary_config, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok", "config": updated}
+
+
+@app.post("/api/boundary-config/reset")
+async def api_reset_boundary_config():
+    """恢复关系边界默认配置。"""
+    return {"status": "ok", "config": await asyncio.to_thread(reset_boundary_config)}
 
 
 # ==========================================

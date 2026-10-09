@@ -1,6 +1,7 @@
 <template>
   <div class="report-card">
-    <FastReportBlock v-if="isFast" :report="report as FastDecisionReport" />
+    <BoundaryBlock v-if="isBoundary" :report="report as BoundaryReport" />
+    <FastReportBlock v-else-if="isFast" :report="report as FastDecisionReport" />
     <SlowReportBlock v-else :report="report as DecisionReport" />
     <div v-if="showFeedback && msgId > 0" class="feedback-wrap">
       <FeedbackBar :conv-id="convId" :msg-id="msgId" />
@@ -10,8 +11,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { AnyReport, DecisionReport, FastDecisionReport } from '../../types'
-import { isFastReport } from '../../utils/report'
+import type { AnyReport, BoundaryReport, DecisionReport, FastDecisionReport } from '../../types'
+import { isBoundaryReport, isFastReport } from '../../utils/report'
+import BoundaryBlock from './BoundaryBlock.vue'
 import FastReportBlock from './FastReportBlock.vue'
 import SlowReportBlock from './SlowReportBlock.vue'
 import FeedbackBar from './FeedbackBar.vue'
@@ -27,8 +29,9 @@ const props = withDefaults(
 )
 
 const isFast = computed(() => isFastReport(props.report))
-// 快回路不支持反馈（后端 feedback 端点会拒绝）
-const showFeedback = computed(() => props.showFeedback && !isFast.value)
+const isBoundary = computed(() => isBoundaryReport(props.report))
+// 快回路与边界关机都不支持反馈（后端只对慢回路的决策记录开放反馈）
+const showFeedback = computed(() => props.showFeedback && !isFast.value && !isBoundary.value)
 </script>
 
 <style scoped>

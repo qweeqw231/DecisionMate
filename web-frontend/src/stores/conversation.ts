@@ -11,7 +11,16 @@ import {
   sendMessageSync,
 } from '../api/decision'
 import { sendMessageStream } from '../api/sse'
+import { isEphemeralReport } from '../utils/report'
 import { usePersonaStore } from './persona'
+
+/** 本地临时消息 id：始终为负，避免与服务端自增 id 冲突 */
+let localIdSeq = -1
+function nextLocalId(): number {
+  const id = localIdSeq
+  localIdSeq -= 1
+  return id
+}
 
 interface StreamingState {
   active: boolean
@@ -104,7 +113,7 @@ export const useConversationStore = defineStore('conversation', {
 
       // 本地立即展示用户消息（临时 id 为负数，消息列表刷新时会被服务端记录替换）
       this.messages.push({
-        id: -Date.now(),
+        id: nextLocalId(),
         conversation_id: convId,
         role: 'user',
         content: scenario,
@@ -159,6 +168,20 @@ export const useConversationStore = defineStore('conversation', {
 
       this.streaming = { active: false, stage: '', personaNames: [] }
       this.abortCtrl = null
+
+      if (isEphemeralReport(finalReport)) {
+        // 关系边界关机：后端刻意未写入任何记录，因此不能用服务端消息列表覆盖，
+        // 否则这一轮交互会立刻消失。改为在本地追加一条仅存在于当前会话的助手消息。
+        this.messages.push({
+          id: nextLocalId(),
+          conversation_id: convId,
+          role: 'assistant',
+          content: JSON.stringify(finalReport),
+          created_at: new Date().toISOString(),
+        })
+        return finalReport
+      }
+
       // 以服务端记录为准刷新（拿到真实消息 id，供反馈接口使用）
       this.messages = await listMessages(convId)
       await this.loadSessions()

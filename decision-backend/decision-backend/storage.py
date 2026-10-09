@@ -140,8 +140,55 @@ def init_db():
         )
     """)
 
+    # 应用设置表（P1-4：关系边界的可配置规则，同时供 L3「用户亲手调整底层参数」使用）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
+
+
+# ==========================================
+# 应用设置（键值对，值为 JSON）
+# ==========================================
+
+def get_setting(key: str, default=None):
+    """读取一项设置；不存在或无法解析时返回 default。"""
+    conn = _get_connection()
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    if row is None:
+        return default
+    try:
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def set_setting(key: str, value) -> None:
+    """写入/覆盖一项设置（值为 JSON 序列化后的字符串）。"""
+    conn = _get_connection()
+    now = datetime.now().isoformat()
+    conn.execute(
+        """INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+        (key, json.dumps(value, ensure_ascii=False), now)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_setting_updated_at(key: str) -> Optional[str]:
+    """读取某项设置的最近更新时间。"""
+    conn = _get_connection()
+    row = conn.execute("SELECT updated_at FROM app_settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["updated_at"] if row else None
 
 
 # ==========================================

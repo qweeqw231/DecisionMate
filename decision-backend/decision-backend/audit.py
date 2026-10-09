@@ -382,6 +382,9 @@ def build_system_audit(records: Optional[list] = None) -> dict:
         "data_quality": {
             "scenario_type_variants": _scenario_type_variants(records),
         },
+        # P1-4：关系边界条件属于架构 6.4 所说的「用户亲手调整的底层参数」，
+        # 随审计一并展示，让用户能看到当前伦理边界的触发条件。
+        "boundary_config": _safe_boundary_config(),
         "capability_profile": _safe_profile(),
         "limitations": [
             "准确率为**决策级**，来自用户对整份报告的 useful/inaccurate 反馈，"
@@ -406,4 +409,14 @@ def _safe_profile() -> dict:
         return {k: v for k, v in profile.items() if not k.endswith("_basis")}
     except Exception as e:  # noqa: BLE001
         logging.warning("[L3审计] 读取能力画像失败，已跳过：%s", e)
+        return {}
+
+
+def _safe_boundary_config() -> dict:
+    """读取关系边界配置；失败时返回空字典，不阻断审计。"""
+    try:
+        from boundary_config import config_metadata
+        return config_metadata()
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[L3审计] 读取关系边界配置失败，已跳过：%s", e)
         return {}

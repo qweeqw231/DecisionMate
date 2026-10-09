@@ -4,6 +4,8 @@ import type {
   AddFactorPayload,
   ArchiveReport,
   ActivatedPersona,
+  BoundaryConfig,
+  BoundaryConfigMeta,
   Conversation,
   Message,
   Persona,
@@ -75,6 +77,13 @@ export const addUserFactor = (payload: AddFactorPayload) =>
 // ---------- L3 系统自校正 ----------
 /** 汇总审计（只读，不触发任何 Agent 调用） */
 export const getSystemAudit = () => get<SystemAudit>('/api/system-audit')
+
+// ---------- 关系边界（P1-4） ----------
+export const getBoundaryConfig = () => get<BoundaryConfigMeta>('/api/boundary-config')
+export const updateBoundaryConfig = (payload: Partial<BoundaryConfig>) =>
+  post<{ status: string; config: BoundaryConfig }>('/api/boundary-config', payload)
+export const resetBoundaryConfig = () =>
+  post<{ status: string; config: BoundaryConfig }>('/api/boundary-config/reset')
 
 // ---------- 分身 ----------
 export const listPersonas = () => get<Persona[]>('/api/personas')
