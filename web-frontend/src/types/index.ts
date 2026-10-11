@@ -209,6 +209,8 @@ export interface ArchiveReport {
   reusable_pattern?: string | null
   /** 因子写入守卫的钳制/拒绝记录：解释「模型提议了但没生效」 */
   guard_rejections?: string[]
+  /** 本次复盘是否有量化参数可比对（快回路为 false，只做定性复盘） */
+  params_available?: boolean
 }
 
 export interface AddFactorPayload {

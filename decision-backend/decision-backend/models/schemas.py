@@ -306,6 +306,8 @@ class ArchiveReport(BaseModel):
     reusable_pattern: Optional[str] = None  # 可复用模式提取
     # P0 修复：能力因子写入守卫的拒绝/钳制记录，便于排查「AI 提议了但没生效」的原因
     guard_rejections: List[str] = []
+    # P2 新增：本次复盘是否有量化参数可比对（快回路为 False，只做定性复盘）
+    params_available: bool = True
 
 
 # ==========================================

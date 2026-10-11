@@ -19,8 +19,8 @@ def rec(**overrides):
     base = {
         "id": 1, "conversation_id": 1, "message_id": 1, "scenario": "场景",
         "p": 0.9, "q": 0.1, "b": 10.0, "f_star": 0.89, "scenario_type": "高赔率重注场景",
-        "loop_type": "slow", "feedback_type": None, "feedback_text": None,
-        "created_at": "2026-05-30T01:00:00", "report_json": None,
+        "loop_type": "slow", "params_available": 1, "feedback_type": None,
+        "feedback_text": None, "created_at": "2026-05-30T01:00:00", "report_json": None,
     }
     base.update(overrides)
     return base
@@ -304,6 +304,69 @@ class TestMonthlyTrend(unittest.TestCase):
 
     def test_empty_trend_for_empty_dataset(self):
         self.assertEqual(build_system_audit(records=[])["trend_by_month"], [])
+
+
+class TestFastLoopRecordsAreExcludedFromParamStats(unittest.TestCase):
+    """
+    P2-2：快回路决策现在也落库，但没有量化参数（params_available=0）。
+    它们必须计入回路分布与准确率，却被排除在所有按 f* 的统计之外，
+    否则占位 0 会把平均 f* 和「重注占比」的分母弄脏。
+    """
+
+    def _records(self):
+        return [
+            rec(loop_type="slow", params_available=1, f_star=0.89,
+                feedback_type="useful", report_json=report()),
+            rec(loop_type="slow", params_available=1, f_star=0.30,
+                feedback_type="inaccurate", report_json=report()),
+            rec(loop_type="fast", params_available=0, f_star=0.0, scenario_type="",
+                feedback_type="useful", report_json=json.dumps({"loop_type": "fast"})),
+            rec(loop_type="fast", params_available=0, f_star=0.0, scenario_type="",
+                feedback_type=None, report_json=json.dumps({"loop_type": "fast"})),
+        ]
+
+    def test_fast_decisions_are_counted_in_loop_distribution(self):
+        audit = build_system_audit(records=self._records())
+        self.assertEqual(audit["loop_distribution"], {"slow": 2, "fast": 2})
+        self.assertEqual(audit["totals"]["fast_decisions"], 2)
+        self.assertEqual(audit["totals"]["with_quant_params"], 2)
+
+    def test_fast_decisions_do_not_pollute_avg_f_star(self):
+        audit = build_system_audit(records=self._records())
+        # 若把快回路的 0 也算进去，均值会变成 (0.89+0.30)/4
+        self.assertAlmostEqual(audit["avg_f_star"], 0.595, places=4)
+
+    def test_fast_decisions_do_not_enter_recommendation_mix(self):
+        audit = build_system_audit(records=self._records())
+        self.assertEqual(sum(audit["recommendation_mix"].values()), 2)
+        self.assertNotIn("观望或小注", audit["recommendation_mix"])
+
+    def test_fast_decisions_still_count_towards_accuracy(self):
+        """快回路的反馈仍然是有效信号，不应被排除在准确率之外。"""
+        audit = build_system_audit(records=self._records())
+        self.assertEqual(audit["decision_accuracy"]["sample"], 3)
+        self.assertAlmostEqual(audit["decision_accuracy"]["value"], 2 / 3, places=4)
+        rows = {row["key"]: row for row in audit["by_loop_type"]}
+        self.assertEqual(rows["fast"]["decisions"], 2)
+        self.assertAlmostEqual(rows["fast"]["accuracy"], 1.0, places=4)
+        self.assertIsNone(rows["fast"]["avg_f_star"], "快回路没有平均 f*")
+
+    def test_monthly_heavy_bet_share_uses_param_count(self):
+        records = [
+            rec(created_at="2026-05-01T00:00:00", params_available=1, f_star=0.9,
+                report_json=report()),
+            rec(created_at="2026-05-02T00:00:00", params_available=0, f_star=0.0,
+                loop_type="fast", report_json=json.dumps({"loop_type": "fast"})),
+        ]
+        trend = build_system_audit(records=records)["trend_by_month"][0]
+        self.assertEqual(trend["decisions"], 2)
+        self.assertAlmostEqual(trend["heavy_bet_share"], 1.0, places=4)
+        self.assertAlmostEqual(trend["avg_f_star"], 0.9, places=4)
+
+    def test_limitations_no_longer_claim_fast_is_never_stored(self):
+        joined = "".join(build_system_audit(records=[])["limitations"])
+        self.assertNotIn("快回路决策不落库", joined)
+        self.assertIn("params_available", joined)
 
 
 if __name__ == "__main__":

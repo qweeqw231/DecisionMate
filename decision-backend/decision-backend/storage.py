@@ -8,6 +8,7 @@ Phase 3.2 实现，Phase 3.3 将接入向量数据库。
 """
 
 import re
+import logging
 import sqlite3
 import json
 import os
@@ -62,6 +63,9 @@ def init_db():
     """)
 
     # 决策记录表（存储每轮决策的摘要参数）
+    # 注意：p/q/b/f_star 是 NOT NULL，快回路决策没有量化参数，
+    # 因此用新增列 params_available 区分（0 = 快回路，参数无意义），
+    # 而不是让 0 被当成「真实的 f*=0」参与统计。
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS decision_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +76,7 @@ def init_db():
             q REAL NOT NULL DEFAULT 0,
             b REAL NOT NULL DEFAULT 0,
             f_star REAL NOT NULL DEFAULT 0,
+            params_available INTEGER NOT NULL DEFAULT 1,
             scenario_type TEXT NOT NULL DEFAULT '',
             loop_type TEXT NOT NULL DEFAULT 'slow',
             feedback_type TEXT DEFAULT NULL,
@@ -174,8 +179,55 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_execution_updates_decision ON execution_updates(decision_id)"
     )
 
+    # 反馈接口与 L1 校准都要按 (conversation_id, message_id) 定位决策记录，
+    # 此前这两个字段没有索引，每次都是全表扫描。
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_decision_records_message ON decision_records(message_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_decision_records_conversation ON decision_records(conversation_id)"
+    )
+
     conn.commit()
+    _apply_migrations(conn)
     conn.close()
+
+
+# ==========================================
+# 轻量 schema 迁移
+#
+# 此前没有任何迁移机制，加字段只能靠人工 DDL。这里用 SQLite 自带的
+# PRAGMA user_version 记录版本，启动时按序补齐。
+# 约定：迁移必须是**幂等**的（先探测再改），因为新库由 CREATE TABLE 直接建到最新结构，
+# 不会走迁移路径，而旧库需要逐级补齐。
+# ==========================================
+
+SCHEMA_VERSION = 2
+
+
+def _column_names(conn, table: str) -> List[str]:
+    return [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def _apply_migrations(conn) -> None:
+    """把数据库补齐到 SCHEMA_VERSION。"""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    if version < 2:
+        # v2：为快回路决策引入 params_available（0 = 无量化参数）
+        if "decision_records" in [
+            row["name"] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")
+        ] and "params_available" not in _column_names(conn, "decision_records"):
+            conn.execute(
+                "ALTER TABLE decision_records "
+                "ADD COLUMN params_available INTEGER NOT NULL DEFAULT 1"
+            )
+            conn.commit()
+            logging.info("[迁移] decision_records 增加 params_available 列（v2）")
+
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
 
 
 # ==========================================
@@ -408,24 +460,26 @@ def get_messages(conv_id: int) -> List[dict]:
 
 def add_decision_record(conv_id: int, msg_id: int, scenario: str,
                         p: float, q: float, b: float, f_star: float,
-                        scenario_type: str, loop_type: str) -> int:
-    """存储一条决策摘要记录，返回记录ID"""
+                        scenario_type: str, loop_type: str,
+                        params_available: bool = True) -> int:
+    """
+    存储一条决策摘要记录，返回记录ID。
+
+    params_available=False 用于快回路决策：它没有量化参数，p/q/b/f_star 只是
+    为了满足 NOT NULL 而写的占位 0，任何按 f* 统计的地方都必须先看这个标记。
+    """
     conn = _get_connection()
     now = datetime.now().isoformat()
-    
-    # 临时关闭外键约束，允许 msg_id=0 占位符写入
-    conn.execute("PRAGMA foreign_keys = OFF")
-    
+
     cursor = conn.execute(
-        """INSERT INTO decision_records 
-           (conversation_id, message_id, scenario, p, q, b, f_star, scenario_type, loop_type, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (conv_id, msg_id, scenario, p, q, b, f_star, scenario_type, loop_type, now)
+        """INSERT INTO decision_records
+           (conversation_id, message_id, scenario, p, q, b, f_star,
+            params_available, scenario_type, loop_type, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (conv_id, msg_id, scenario, p, q, b, f_star,
+         1 if params_available else 0, scenario_type, loop_type, now)
     )
-    
-    # 重新开启外键约束
-    conn.execute("PRAGMA foreign_keys = ON")
-    
+
     record_id = cursor.lastrowid
     conn.commit()
     conn.close()
@@ -559,7 +613,7 @@ def get_decision_records_with_report() -> List[dict]:
     conn = _get_connection()
     rows = conn.execute("""
         SELECT d.id, d.conversation_id, d.message_id, d.scenario,
-               d.p, d.q, d.b, d.f_star, d.scenario_type, d.loop_type,
+               d.p, d.q, d.b, d.f_star, d.params_available, d.scenario_type, d.loop_type,
                d.feedback_type, d.feedback_text, d.created_at,
                m.content AS report_json
         FROM decision_records d

@@ -435,7 +435,10 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             recommendation=recommendation,
             note="此建议基于直觉和经验法则，未经过完整的量化分析。如需深度分析，请提供更多细节。"
         )
-        record_params = None
+        # P2：快回路决策同样落库（loop_type="fast"、params_available=False），
+        # 否则 L3 的 loop_distribution 里 fast 恒为 0，路由质量与快回路准确率
+        # 都无法从真实使用数据里评估。
+        record_params = {"fast": True}
     else:
         # -------- 慢回路：多分身并行调用 + 能力因子注入 --------
         # 1. 获取所有被选择的分身
@@ -599,6 +602,20 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
 
     # 4. 决策归档（直接绑定真实消息ID，无占位符、无回填竞态）
     if record_params is not None:
+        is_fast_record = bool(record_params.get("fast"))
+        if is_fast_record:
+            # 快回路：落库以便 L2/L3 覆盖，但没有量化参数，因此不写向量
+            #（向量元数据里的 p/b/f* 会全是 0，被当成历史参考会误导后续分析）。
+            await asyncio.to_thread(
+                add_decision_record,
+                conv_id=conv_id, msg_id=assistant_msg["id"], scenario=body.scenario,
+                p=0.0, q=0.0, b=0.0, f_star=0.0,
+                scenario_type="", loop_type="fast", params_available=False,
+            )
+            logging.info(f"[消息成功] conv_id={conv_id}, loop_type=fast（已归档，无量化参数）")
+            yield "result", json.loads(system_content)
+            return
+
         decision_id = await asyncio.to_thread(
             add_decision_record,
             conv_id=conv_id, msg_id=assistant_msg["id"], scenario=body.scenario,
@@ -749,6 +766,7 @@ async def api_submit_feedback(conv_id: int, msg_id: int, body: FeedbackRequest):
     update_feedback(decision_id, body.feedback_type, body.feedback_text)
 
     # 运行复盘归档Agent
+    # 快回路决策（params_available=0）走定性复盘，不做能力因子调整
     archive_report = run_archive(
         decision_id=decision_id,
         initial_f_star=record["f_star"],
@@ -757,7 +775,8 @@ async def api_submit_feedback(conv_id: int, msg_id: int, body: FeedbackRequest):
         b=record["b"],
         scenario_type=record["scenario_type"],
         feedback_type=body.feedback_type,
-        feedback_text=body.feedback_text or ""
+        feedback_text=body.feedback_text or "",
+        params_available=bool(record.get("params_available", 1)),
     )
 
     return {
@@ -836,8 +855,10 @@ async def api_get_execution_updates(conv_id: int, msg_id: int):
     if not record:
         raise HTTPException(
             status_code=404,
-            detail="该消息没有对应的决策记录（快回路与边界关机消息不支持执行跟踪）",
+            detail="该消息没有对应的决策记录（边界关机消息不落库，因此不支持执行跟踪）",
         )
+    if not record.get("params_available", 1):
+        raise HTTPException(status_code=400, detail="快回路决策没有量化参数，无法进行执行中校准")
     updates = await asyncio.to_thread(get_execution_updates, record["id"])
     return _build_trajectory(record, updates)
 
@@ -861,8 +882,10 @@ async def api_add_execution_update(conv_id: int, msg_id: int, body: ExecutionUpd
     if not record:
         raise HTTPException(
             status_code=404,
-            detail="该消息没有对应的决策记录（快回路与边界关机消息不支持执行跟踪）",
+            detail="该消息没有对应的决策记录（边界关机消息不落库，因此不支持执行跟踪）",
         )
+    if not record.get("params_available", 1):
+        raise HTTPException(status_code=400, detail="快回路决策没有量化参数，无法进行执行中校准")
 
     history = await asyncio.to_thread(get_execution_updates, record["id"])
     initial = {"p": record["p"], "q": record["q"], "b": record["b"], "f_star": record["f_star"]}

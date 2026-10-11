@@ -167,15 +167,19 @@ def _accuracy(useful: int, inaccurate: int) -> Optional[float]:
 
 def _empty_bucket(key: str) -> dict:
     return {"key": key, "decisions": 0, "with_feedback": 0, "useful": 0,
-            "inaccurate": 0, "accuracy": None, "avg_f_star": None, "_f_sum": 0.0}
+            "inaccurate": 0, "accuracy": None, "avg_f_star": None,
+            "_f_sum": 0.0, "_f_count": 0}
 
 
 def _finalize_bucket(bucket: dict) -> dict:
     decisions = bucket["decisions"]
     bucket["accuracy"] = _accuracy(bucket["useful"], bucket["inaccurate"])
-    bucket["avg_f_star"] = round(bucket["_f_sum"] / decisions, 4) if decisions else None
+    # 平均 f* 只按「有量化参数」的记录算，否则快回路会用占位 0 拉低均值
+    bucket["avg_f_star"] = (round(bucket["_f_sum"] / bucket["_f_count"], 4)
+                            if bucket["_f_count"] else None)
     bucket["feedback_coverage"] = _ratio(bucket["with_feedback"], decisions)
     bucket.pop("_f_sum", None)
+    bucket.pop("_f_count", None)
     return bucket
 
 
@@ -191,6 +195,7 @@ def build_system_audit(records: Optional[list] = None) -> dict:
     total = len(records)
     with_feedback = useful = inaccurate = 0
     reports_missing = reports_unparseable = 0
+    fast_count = 0
 
     loop_dist: dict = {}
     risk_dist: dict = {}
@@ -225,23 +230,32 @@ def build_system_audit(records: Optional[list] = None) -> dict:
             inaccurate += 1
             with_feedback += 1
 
+        # 快回路决策也落库（loop_type="fast"），但没有量化参数：
+        # p/q/b/f_star 只是满足 NOT NULL 的占位 0，绝不能进入任何按 f* 的统计。
+        has_params = bool(record.get("params_available", 1))
+        if not has_params:
+            fast_count += 1
+
         f_star = record.get("f_star")
         try:
             f_star = float(f_star)
         except (TypeError, ValueError):
             f_star = None
-        if f_star is not None:
+        if has_params and f_star is not None:
             f_values.append(f_star)
+        elif not has_params:
+            f_star = None
 
-        band = classify_f_star(f_star)
-        rec_mix[band] = rec_mix.get(band, 0) + 1
+        band = classify_f_star(f_star) if has_params else None
+        if band:
+            rec_mix[band] = rec_mix.get(band, 0) + 1
 
         # 按月聚合（供 L3 看板画趋势）
         mkey = month_key(record.get("created_at"))
         if mkey:
             mb = month_buckets.setdefault(mkey, {
                 "key": mkey, "decisions": 0, "useful": 0, "inaccurate": 0,
-                "with_feedback": 0, "heavy_bet": 0, "_f_sum": 0.0,
+                "with_feedback": 0, "heavy_bet": 0, "_f_sum": 0.0, "_f_count": 0,
             })
             mb["decisions"] += 1
             if feedback == "useful":
@@ -252,8 +266,9 @@ def build_system_audit(records: Optional[list] = None) -> dict:
                 mb["with_feedback"] += 1
             if band == "重注":
                 mb["heavy_bet"] += 1
-            if f_star is not None:
+            if has_params and f_star is not None:
                 mb["_f_sum"] += f_star
+                mb["_f_count"] += 1
 
         scenario_key = (record.get("scenario_type") or "").strip() or "（未识别）"
         bucket = by_scenario.setdefault(scenario_key, _empty_bucket(scenario_key))
@@ -264,8 +279,9 @@ def build_system_audit(records: Optional[list] = None) -> dict:
         elif feedback == "inaccurate":
             bucket["inaccurate"] += 1
             bucket["with_feedback"] += 1
-        if f_star is not None:
+        if has_params and f_star is not None:
             bucket["_f_sum"] += f_star
+            bucket["_f_count"] += 1
 
         loop_bucket = by_loop.setdefault(loop, _empty_bucket(loop))
         loop_bucket["decisions"] += 1
@@ -275,8 +291,9 @@ def build_system_audit(records: Optional[list] = None) -> dict:
         elif feedback == "inaccurate":
             loop_bucket["inaccurate"] += 1
             loop_bucket["with_feedback"] += 1
-        if f_star is not None:
+        if has_params and f_star is not None:
             loop_bucket["_f_sum"] += f_star
+            loop_bucket["_f_count"] += 1
 
         if report:
             level = report.get("risk_level")
@@ -329,8 +346,10 @@ def build_system_audit(records: Optional[list] = None) -> dict:
             "feedback_coverage": _ratio(mb["with_feedback"], decisions),
             "accuracy": _accuracy(mb["useful"], mb["inaccurate"]),
             "heavy_bet_count": mb["heavy_bet"],
-            "heavy_bet_share": _ratio(mb["heavy_bet"], decisions),
-            "avg_f_star": round(mb["_f_sum"] / decisions, 4) if decisions else None,
+            "heavy_bet_share": (_ratio(mb["heavy_bet"], mb["_f_count"])
+                                if mb["_f_count"] else None),
+            "avg_f_star": (round(mb["_f_sum"] / mb["_f_count"], 4)
+                           if mb["_f_count"] else None),
         })
 
     created = [r.get("created_at") for r in records if r.get("created_at")]
@@ -347,6 +366,9 @@ def build_system_audit(records: Optional[list] = None) -> dict:
             "feedback_coverage": _ratio(with_feedback, total),
             "reports_missing": reports_missing,
             "reports_unparseable": reports_unparseable,
+            # P2：快回路决策现已落库，但参数无意义，单独计数
+            "fast_decisions": fast_count,
+            "with_quant_params": total - fast_count,
         },
         # 决策级准确率（非 Agent 级，见 limitations）
         "decision_accuracy": {
@@ -356,7 +378,8 @@ def build_system_audit(records: Optional[list] = None) -> dict:
         "loop_distribution": loop_dist,
         "recommendation_mix": rec_mix,
         "recommendation_mix_ratio": {
-            band: _ratio(count, total) for band, count in sorted(rec_mix.items())
+            band: _ratio(count, total - fast_count if total - fast_count > 0 else total)
+            for band, count in sorted(rec_mix.items())
         },
         "risk_level_distribution": risk_dist,
         "avg_f_star": round(sum(f_values) / len(f_values), 4) if f_values else None,
@@ -393,8 +416,9 @@ def build_system_audit(records: Optional[list] = None) -> dict:
             "不是各 Agent 的独立准确率。现有数据不支持按 Agent 拆分。",
             "Phase 4.2.3 设计过分身级反馈（decision_records.persona_feedback），"
             "但表与接口均未实现，因此无法衡量单个分身的建议质量。",
-            "快回路决策不落库，loop_distribution 中的 fast 恒为 0，"
-            "快回路的准确率与路由质量无法从历史数据评估。",
+            "快回路决策已落库并计入回路分布与准确率，但它没有量化参数"
+            "（params_available=0），因此不参与任何按 f* 的统计；"
+            "改动之前的历史快回路决策没有记录，fast 计数只反映此后产生的数据。",
             "survival_clamp_rate 只识别「仲裁前 f* > 0.5 且记录值 = 原值 × "
             f"{SURVIVAL_CLAMP_FACTOR}」这一精确形态；早期记录不含仲裁，历史值恒为未被下调。",
             "历史记录字段不齐（26 条无 persona_results、26 条 scenario_type 为空），"

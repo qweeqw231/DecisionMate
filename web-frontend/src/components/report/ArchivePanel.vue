@@ -8,9 +8,25 @@
     </el-divider>
 
     <div class="archive-section">
-      <span class="label">初始 f*：</span>{{ report.initial_f_star.toFixed(2) }}
-      <span class="label" style="margin-left: 16px">反馈类型：</span>
+      <template v-if="hasParams">
+        <span class="label">初始 f*：</span>{{ report.initial_f_star.toFixed(2) }}
+        <span class="label" style="margin-left: 16px">反馈类型：</span>
+      </template>
+      <template v-else>
+        <span class="label">决策类型：</span>快回路（直觉建议）
+        <span class="label" style="margin-left: 16px">反馈类型：</span>
+      </template>
       <el-tag size="small" :type="feedbackTagType" effect="plain">{{ feedbackLabel }}</el-tag>
+    </div>
+
+    <div v-if="!hasParams" class="archive-section">
+      <div class="sub-title">定性复盘</div>
+      <el-alert
+        type="info"
+        :closable="false"
+        class="qualitative-note"
+        title="本次为快回路决策，没有胜率 / 赔率 / f* 可比对，因此只做定性回顾，不会调整能力因子。"
+      />
     </div>
 
     <div class="archive-section">
@@ -100,6 +116,8 @@ const accepting = ref(false)
 
 const factorEntries = computed(() => Object.entries(props.report.factor_updates || {}))
 const guardNotes = computed(() => props.report.guard_rejections ?? [])
+/** 快回路决策没有量化参数，复盘走定性路径 */
+const hasParams = computed(() => props.report.params_available !== false)
 
 const feedbackLabel = computed(() =>
   ({ useful: '决策有效', inaccurate: '决策不准确', custom: '自定义反馈' }[props.report.feedback_type]
@@ -163,6 +181,10 @@ async function acceptProposal() {
   color: #a0a4ab;
   cursor: help;
   vertical-align: -2px;
+}
+.qualitative-note {
+  margin-top: 4px;
+  line-height: 1.7;
 }
 .text {
   line-height: 1.7;

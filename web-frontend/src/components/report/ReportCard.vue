@@ -35,8 +35,9 @@ const props = withDefaults(
 
 const isFast = computed(() => isFastReport(props.report))
 const isBoundary = computed(() => isBoundaryReport(props.report))
-// 快回路与边界关机都不支持反馈（后端只对慢回路的决策记录开放反馈）
-const showFeedback = computed(() => props.showFeedback && !isFast.value && !isBoundary.value)
+// 边界关机不落库、没有决策记录，因此不支持反馈；
+// 快回路决策现在也会落库，可以反馈（后端走定性复盘路径）。
+const showFeedback = computed(() => props.showFeedback && !isBoundary.value)
 </script>
 
 <style scoped>
