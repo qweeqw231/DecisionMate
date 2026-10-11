@@ -92,20 +92,29 @@ def run_archive(decision_id: int, initial_f_star: float, p: float, q: float, b: 
         for reason in rejections:
             logging.warning("[复盘归档] 因子写入未通过校验：%s", reason)
 
+        # P2 修复：逐个因子写入并各自兜错。
+        # 原实现把所有写入放在同一个 try 里，写到一半失败会整体跳到 except，
+        # 于是「已经写进去的因子」被上报成 factor_updates={} —— 报告少报了实际发生的事。
         applied_updates: dict = {}
         if accepted:
             now = datetime.now().isoformat()
             for factor_name, new_value in accepted.items():
                 old_value = profile.get(factor_name)
-                update_user_profile({
-                    factor_name: new_value,
-                    f"{factor_name}_updated_at": now,
-                    f"{factor_name}_basis": reasons.get(factor_name, "复盘校准"),
-                })
+                reason = reasons.get(factor_name, "复盘校准")
+                try:
+                    update_user_profile({
+                        factor_name: new_value,
+                        f"{factor_name}_updated_at": now,
+                        f"{factor_name}_basis": reason,
+                    })
+                except Exception as e:  # noqa: BLE001
+                    logging.error("[复盘归档] 写入因子「%s」失败：%s", factor_name, e)
+                    rejections.append(f"「{factor_name}」写入失败：{e}")
+                    continue
                 applied_updates[factor_name] = {
                     "old": old_value,
                     "new": new_value,
-                    "reason": reasons.get(factor_name, "复盘校准"),
+                    "reason": reason,
                 }
 
         # 解析新因子提议

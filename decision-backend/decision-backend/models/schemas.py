@@ -1,11 +1,53 @@
 # models/schemas.py
-from pydantic import BaseModel
-from typing import Optional,List
+from pydantic import BaseModel, Field, StringConstraints
+from typing import Annotated, List, Literal, Optional
+
+# ==========================================
+# P2 新增：请求体的统一约束
+#
+# 此前这些字段都是裸 str / List[dict]：空白场景会一路送进大模型并落库，
+# activated_personas 是未类型化的 dict，缺字段时在管线里抛 KeyError → 500。
+# 现在统一在请求模型层约束，非法输入直接 422，管线里不再需要防御性取值。
+# ==========================================
+
+MAX_SCENARIO_LENGTH = 4000
+MAX_TITLE_LENGTH = 200
+MAX_NAME_LENGTH = 50
+MAX_PRINCIPLE_LENGTH = 500
+MAX_FEEDBACK_LENGTH = 2000
+MAX_BASIS_LENGTH = 500
+
+# 决策场景：去首尾空白、非空、限长
+ScenarioText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_SCENARIO_LENGTH),
+]
+# 标题 / 名称
+TitleText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TITLE_LENGTH),
+]
+NameText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_NAME_LENGTH),
+]
+OptionalText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_PRINCIPLE_LENGTH)]
 
 
 class DecisionRequest(BaseModel):
     """前端发来的决策请求"""
-    scenario: str
+    scenario: ScenarioText
+
+
+class ActivatedPersonaInput(BaseModel):
+    """
+    前端传入的「参与本次会商的某个分身」。
+
+    P2 修复：原先是 Optional[List[dict]]，键名写错或缺字段时会在管线里
+    抛 KeyError → 500；权重也没有上下界。现在强类型 + 范围校验。
+    """
+    persona_id: int
+    normalized_weight: float = Field(ge=0.0, le=1.0)
 
 
 class QuantResult(BaseModel):
@@ -185,12 +227,12 @@ class CalibrationTrajectory(BaseModel):
 
 class ConversationCreate(BaseModel):
     """创建对话的请求体"""
-    title: Optional[str] = None  # 可选标题，不传则自动生成
+    title: Optional[TitleText] = None  # 可选标题，不传则自动生成
 
 
 class ConversationUpdate(BaseModel):
     """更新对话的请求体（重命名）"""
-    title: str
+    title: TitleText
 
 
 class ConversationResponse(BaseModel):
@@ -214,8 +256,8 @@ class MessageResponse(BaseModel):
 
 class MessageCreate(BaseModel):
     """发送消息的请求体"""
-    scenario: str       # 用户输入的决策场景
-    activated_personas: Optional[List[dict]] = None  # Phase 4.2.3：[{persona_id, normalized_weight}]
+    scenario: ScenarioText       # 用户输入的决策场景
+    activated_personas: Optional[List[ActivatedPersonaInput]] = None  # Phase 4.2.3
 
 
 # ==========================================
@@ -224,8 +266,9 @@ class MessageCreate(BaseModel):
 
 class FeedbackRequest(BaseModel):
     """用户提交的反馈"""
-    feedback_type: str  # "useful" | "inaccurate" | "custom"
-    feedback_text: Optional[str] = None  # 自定义文字（可选）
+    # P2：枚举化，避免任意字符串被当作反馈类型写库并参与 L3 统计
+    feedback_type: Literal["useful", "inaccurate", "custom"]
+    feedback_text: Optional[str] = Field(default=None, max_length=MAX_FEEDBACK_LENGTH)
 
 
 class NewFactorProposal(BaseModel):
@@ -245,9 +288,11 @@ class AddFactorRequest(BaseModel):
     而客户端（含鸿蒙前端）提交的是 JSON body，导致恒定 422，
     「新因子提议 → 用户接受」这条链路实际不可达。
     """
+    # 名称与取值的校验统一由 factor_guard.validate_new_factor 负责（含保留名冲突），
+    # 因此这里保持裸 str，避免同一字段的错误码被拆成 400/422 两种。
     factor_name: str
     value: float
-    basis: str = ""
+    basis: Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_BASIS_LENGTH)] = ""
 
 
 class ArchiveReport(BaseModel):
@@ -269,17 +314,17 @@ class ArchiveReport(BaseModel):
 
 class PersonaCreate(BaseModel):
     """创建自定义分身"""
-    name: str
-    risk_preference: str  # aggressive / neutral / conservative / custom
-    core_principle: Optional[str] = None
+    name: NameText
+    risk_preference: Literal["aggressive", "neutral", "conservative", "custom"]
+    core_principle: Optional[OptionalText] = None
 
 
 class PersonaUpdate(BaseModel):
     """更新分身信息"""
-    name: Optional[str] = None
-    core_principle: Optional[str] = None
-    weight: Optional[float] = None
-    risk_preference: Optional[str] = None  # 新增
+    name: Optional[NameText] = None
+    core_principle: Optional[OptionalText] = None
+    weight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    risk_preference: Optional[Literal["aggressive", "neutral", "conservative", "custom"]] = None
 
 
 class PersonaResponse(BaseModel):

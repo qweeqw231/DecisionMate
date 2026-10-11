@@ -441,7 +441,7 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
         # 1. 获取所有被选择的分身
         if body.activated_personas:
             # 使用前端传来的分身列表
-            persona_ids = [ap["persona_id"] for ap in body.activated_personas]
+            persona_ids = [ap.persona_id for ap in body.activated_personas]
             all_personas = [p for p in await asyncio.to_thread(get_personas) if p["id"] in persona_ids]
         else:
             # 降级：使用所有分身
@@ -557,7 +557,7 @@ async def _agent_pipeline(conv_id: int, body: MessageCreate):
             # 8. 加权融合（统一归一化一次）
             if body.activated_personas:
                 # 使用前端传来的归一化权重
-                persona_weights = {ap["persona_id"]: ap["normalized_weight"] for ap in body.activated_personas}
+                persona_weights = {ap.persona_id: ap.normalized_weight for ap in body.activated_personas}
                 for r in persona_results:
                     r["weight"] = persona_weights.get(r["persona_id"], r["weight"])
             total_weight = sum(r["weight"] for r in persona_results) or 1.0

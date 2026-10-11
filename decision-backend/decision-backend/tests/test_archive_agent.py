@@ -146,5 +146,62 @@ class TestFailureHandling(unittest.TestCase):
         self.assertEqual(h.writes, [])
 
 
+class TestPartialWriteReporting(unittest.TestCase):
+    """
+    P2 修复：逐个因子写入并各自兜错。
+
+    原实现把全部写入放在同一个 try 里，写到一半失败会整体跳到 except，
+    于是已经写进去的因子被上报成 factor_updates={} —— 报告少报了实际发生的事。
+    """
+
+    def test_partial_failure_still_reports_what_was_written(self):
+        raw = {
+            "考试备战能力": {"old": 0.85, "new": 0.87, "reason": "先写这个"},
+            "技术速通能力": {"old": 0.88, "new": 0.90, "reason": "这个会失败"},
+        }
+        original = archive_agent.update_user_profile
+        written = []
+
+        def flaky(updates):
+            name = next(iter(updates))
+            if name == "技术速通能力":
+                raise RuntimeError("向量库写入失败")
+            written.append(name)
+            h.profile.update(updates)
+
+        with ArchiveHarness(payload(raw)) as h:
+            archive_agent.update_user_profile = flaky
+            try:
+                report = h.run()
+            finally:
+                archive_agent.update_user_profile = original
+
+        # 成功的那个必须如实上报
+        self.assertIn("考试备战能力", report.factor_updates)
+        self.assertAlmostEqual(report.factor_updates["考试备战能力"]["new"], 0.87, places=4)
+        # 失败的不得谎报为已写入
+        self.assertNotIn("技术速通能力", report.factor_updates)
+        # 失败原因要出现在守卫记录里
+        self.assertTrue(any("写入失败" in r for r in report.guard_rejections))
+        # 复盘本身不能被中断
+        self.assertNotIn("复盘分析异常", report.deviation_analysis)
+
+    def test_total_write_failure_still_returns_a_report(self):
+        original = archive_agent.update_user_profile
+
+        def always_fail(updates):
+            raise RuntimeError("向量库整体不可用")
+
+        raw = {"考试备战能力": {"old": 0.85, "new": 0.87, "reason": "x"}}
+        with ArchiveHarness(payload(raw)) as h:
+            archive_agent.update_user_profile = always_fail
+            try:
+                report = h.run()
+            finally:
+                archive_agent.update_user_profile = original
+        self.assertEqual(report.factor_updates, {})
+        self.assertTrue(report.guard_rejections)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ from typing import Optional
 from models.schemas import QuantResult
 from agent_core.ai_client import chat
 from agent_core.json_utils import extract_json_object
+from kelly import kelly_fraction, validate_params
 
 QUANT_SYSTEM_PROMPT = """你是一个量化决策分析专家。你的任务是根据用户描述的决策场景，运用凯利公式进行分析。
 
@@ -94,6 +95,9 @@ def analyze(scenario: str, system_prompt:  Optional[str] = None) -> QuantResult:
     "reasoning": "详细的推理过程，包含参数估算依据和计算步骤"
     }
 
+    注意：**f* 由系统用凯利公式 f* = p - (1-p)/b 自行复算**，你给出的 f_star 仅作参考。
+    请把全部注意力放在 p（胜率）与 b（赔率）的准确估计上，并保证 q = 1 - p。
+
     请立即以纯JSON格式输出，不要输出其他任何内容。
     """
     effective_prompt = (system_prompt if system_prompt else QUANT_SYSTEM_PROMPT) + json_format_instruction
@@ -108,13 +112,45 @@ def analyze(scenario: str, system_prompt:  Optional[str] = None) -> QuantResult:
     try:
         data = extract_json_object(response_text)
 
+        p = float(data["p"])
+        b = float(data["b"])
+        model_q = float(data["q"])
+        scenario_type = str(data["scenario_type"])
+        reasoning = str(data["reasoning"])
+
+        # 定义域校验：与 kelly.py 共用同一套规则
+        p, b = validate_params(p, b)
+
+        notes = []
+        # 败率按定义应等于 1-p；模型自相矛盾时以 p 为准，并如实记录
+        if abs(model_q - (1.0 - p)) > 0.05:
+            notes.append(
+                f"模型给出的败率 q={model_q:.2f} 与 1-p={1.0 - p:.2f} 不一致，已按 1-p 校正"
+            )
+        q = round(1.0 - p, 4)
+
+        # P2：f* 一律由确定性凯利引擎计算，不再采信模型给的数字。
+        # 此前模型可以返回 f*=4.7 这类越界值，直接渲染成「全力投入 470% 的可用资源」。
+        computed = kelly_fraction(p, b)
+        try:
+            model_f = float(data.get("f_star"))
+        except (TypeError, ValueError):
+            model_f = None
+        if model_f is not None and abs(model_f - computed) > 0.1:
+            notes.append(
+                f"模型给出的 f*={model_f:.2f} 与凯利公式算得的 {computed:.2f} 偏差较大，已按公式取值"
+            )
+
+        if notes:
+            reasoning = f"{reasoning}\n[系统校正] " + "；".join(notes)
+
         return QuantResult(
-            p=round(float(data["p"]), 4),
-            q=round(float(data["q"]), 4),
-            b=round(float(data["b"]), 2),
-            f_star=round(float(data["f_star"]), 4),
-            scenario_type=str(data["scenario_type"]),
-            reasoning=str(data["reasoning"])
+            p=round(p, 4),
+            q=q,
+            b=round(b, 2),
+            f_star=round(computed, 4),
+            scenario_type=scenario_type,
+            reasoning=reasoning,
         )
     except Exception as e:  # noqa: BLE001 —— 解析失败一律回退到安全默认参数，不向上抛
         # 注意：这里必须捕获 TypeError —— 模型返回 {"p": null} 时 float(None) 会抛 TypeError，
@@ -124,7 +160,7 @@ def analyze(scenario: str, system_prompt:  Optional[str] = None) -> QuantResult:
             p=0.5,
             q=0.5,
             b=1.0,
-            f_star=0.0,
+            f_star=0.0,   # = kelly_fraction(0.5, 1.0)，与默认参数自洽
             scenario_type="通用决策场景（AI解析异常，使用默认参数）",
             reasoning=f"AI原始输出未能正确解析为JSON。\n错误: {str(e)}\n原始输出片段: {response_text[:300]}..."
         )
