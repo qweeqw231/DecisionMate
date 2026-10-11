@@ -6,7 +6,9 @@
 
 > 标注「Web」的条目**只在 Vue 前端实现**；鸿蒙端没有对应功能，详见下方「前端维护状态」。
 
-- **元认知路由**：简单/紧急场景走快回路秒回直觉建议；复杂场景自动进入慢回路多 Agent 会商
+- **元认知路由**：简单/紧急场景走快回路秒回直觉建议；复杂场景自动进入慢回路多 Agent 会商。快回路决策同样落库，可在系统自省页看到快慢回路分布
+ 
+
 - **多分身会商**：激进 / 中性 / 保守分身并行量化分析，支持创建自定义分身（上限 3 个）并按权重加权融合；分身会商表可逐行展开，查看每个分身的完整分析意见（胜率/赔率/凯利值与推理过程）
 - **分身管理**：自定义分身创建后可随时编辑名称、风险偏好与核心原则；预置分身支持一键重置
 - **场景策略**：识别单次/多阶段/学期级复合体等场景，输出带日期范围的分阶段策略时间线
@@ -62,7 +64,7 @@ DecisionMate-frontend/ # 鸿蒙 ArkTS 前端（已冻结，仅作历史参考，
 - `GET /api/system-audit` — L3 系统自省汇总（只读）
 - `GET|POST /api/boundary-config`、`POST /api/boundary-config/reset` — 关系边界配置
 - `GET|POST /api/conversations/{id}/messages/{msg_id}/execution-updates` — L1 执行中校准（记录进展 / 读取「初始预判 → 逐次校准」轨迹）
-- `GET /api/health` — 健康检查
+- `GET /api/health` — 健康检查（含 `auth_required`；本端点不要求鉴权，便于前端区分「连不上」与「令牌不对」）
 
 ### 回归测试
 
@@ -97,11 +99,11 @@ cd decision-backend/decision-backend
 cd decision-backend/decision-backend
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-# 在 .env 中配置密钥（该文件已被 gitignore，仓库未提供 .env.example）
+copy .env.example .env      # 然后填入真实密钥
 .\.venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-`.env` 实际只用到两个键：`DEEPSEEK_API_KEY`（对话模型，DeepSeek）与 `SILICONFLOW_API_KEY`（向量嵌入，`BAAI/bge-large-zh-v1.5`，走 SiliconFlow）。模型名与 base_url 目前硬编码在 `agent_core/ai_client.py` 与 `vector_store.py`，并不通过环境变量配置。
+`.env` 实际只用到两个必填键：`DEEPSEEK_API_KEY`（对话模型，DeepSeek）与 `SILICONFLOW_API_KEY`（向量嵌入，`BAAI/bge-large-zh-v1.5`，走 SiliconFlow）。完整样例见 [`.env.example`](decision-backend/decision-backend/.env.example)；模型名与 base_url 目前硬编码在 `agent_core/ai_client.py` 与 `vector_store.py`，并不通过环境变量配置。
 
 ### 前端（开发模式）
 
@@ -135,8 +137,19 @@ python review_app.py           # 复核台（8020），或使用桌面「Decisio
 
 ## 说明
 
-- 系统无鉴权，仅限本机/局域网使用；`.env` 含密钥，切勿提交
+- **鉴权默认关闭**：系统设计为本机/局域网自用。若部署在共享局域网，请在后端 `.env` 设置
+  `DM_AUTH_TOKEN=<随机字符串>` 并重启，然后在前端「设置」页填入同一串字符——
+  否则同网段任何人都能读取能力画像、遍历决策历史并一键清空数据。
+- `.env` 含密钥，切勿提交（已被 gitignore；仓库只提供 `.env.example`）
 - 决策记录与消息在落库时直接绑定，反馈可精确触发复盘归档
-- SQLite 并发已启用 WAL
+- **快回路决策同样落库**（`loop_type="fast"`），以便评估路由质量；它没有量化参数，
+  以 `params_available=0` 标记，不参与任何按 f\* 的统计，反馈也只做定性复盘
+- SQLite 并发已启用 WAL；schema 变更经 `PRAGMA user_version` 在启动时自动迁移
 - **关系边界命中时默认不落库**（消息、决策记录、向量库均不写入），这是架构要求的行为，不是 bug
 - 前端问题只保证了 Web 端；鸿蒙端为冻结代码，已知落后项见「前端维护状态」
+
+## 持续集成
+
+`.github/workflows/ci.yml` 在 push / PR 时运行三个 job：后端回归测试
+（不读 `.env`、不访问网络，全部大模型调用在测试里都是确定性桩）、
+前端类型检查与构建、以及仓库卫生检查（密钥与运行时数据是否误入版本库）。
