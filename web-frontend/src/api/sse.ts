@@ -18,7 +18,9 @@ export interface SendStreamOptions {
  */
 export async function sendMessageStream(opts: SendStreamOptions): Promise<void> {
   const { convId, scenario, activatedPersonas, onEvent, signal } = opts
-  const url = useSettingsStore().apiBase + `/api/conversations/${convId}/messages/stream`
+  const settings = useSettingsStore()
+  const url = settings.apiBase + `/api/conversations/${convId}/messages/stream`
+  const token = settings.authToken.trim()
 
   let res: Response
   try {
@@ -27,6 +29,7 @@ export async function sendMessageStream(opts: SendStreamOptions): Promise<void> 
       headers: {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
         scenario,
@@ -45,6 +48,9 @@ export async function sendMessageStream(opts: SendStreamOptions): Promise<void> 
     try {
       detail = JSON.parse(text)?.detail || text
     } catch { /* 保留原文 */ }
+    if (res.status === 401) {
+      throw new Error(`${detail || '鉴权失败'}（后端已启用鉴权，请在「设置」页填写访问令牌）`)
+    }
     throw new Error(detail || `HTTP ${res.status}`)
   }
 

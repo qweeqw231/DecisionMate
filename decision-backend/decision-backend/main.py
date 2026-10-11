@@ -10,10 +10,13 @@ import logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 import asyncio
 import json
-from typing import List
+import os
+import secrets
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from models.schemas import (
     DecisionRequest, DecisionReport, FastDecisionReport,
@@ -73,13 +76,71 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    # 系统无鉴权、不依赖 cookie：allow_origins=["*"] + allow_credentials=False 是合法组合，
+    # 系统默认无鉴权、不依赖 cookie：allow_origins=["*"] + allow_credentials=False 是合法组合，
     # 允许局域网内任意设备/任意 IP 的前端连接（后端 IP 漂移场景）；同源托管模式下无需 CORS。
+    # 如需在共享局域网里保护个人数据，请在 .env 设置 DM_AUTH_TOKEN（见下方鉴权中间件）。
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==========================================
+# P2 新增：可选的共享密钥鉴权
+#
+# 默认关闭（DM_AUTH_TOKEN 未设置时行为与之前完全一致），因为这套系统本来就是
+# 「本机/局域网自用、无云服务器」。但一旦部署在共享局域网，任何人都能读走个人
+# 能力画像、遍历决策历史、甚至清空数据库——因此提供开关。
+#
+# 开启方式：在 .env 中设置 DM_AUTH_TOKEN=<一段随机字符串>，重启后端；
+# 前端在「设置」页填入同一串字符即可（存 localStorage，随请求带在请求头里）。
+# ==========================================
+
+_AUTH_TOKEN_CACHE: Optional[str] = None
+
+
+def auth_token() -> str:
+    """读取 DM_AUTH_TOKEN（首次调用时加载 .env）。空字符串表示不启用鉴权。"""
+    global _AUTH_TOKEN_CACHE
+    if _AUTH_TOKEN_CACHE is None:
+        from dotenv import load_dotenv
+        load_dotenv()
+        _AUTH_TOKEN_CACHE = (os.getenv("DM_AUTH_TOKEN") or "").strip()
+    return _AUTH_TOKEN_CACHE
+
+
+def _extract_request_token(request) -> str:
+    header = request.headers.get("authorization") or ""
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return (request.headers.get("x-auth-token") or "").strip()
+
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    """
+    启用鉴权后，除 /api/health 与静态资源外的所有 /api/* 都需要携带令牌。
+
+    /api/health 保持开放，让前端「测试连接」能区分「连不上」和「令牌不对」；
+    静态前端本身不含个人数据，也不需要令牌即可加载。
+    """
+    token = auth_token()
+    path = request.url.path
+    if (not token
+            or not path.startswith("/api/")
+            or path == "/api/health"
+            or request.method == "OPTIONS"):
+        return await call_next(request)
+
+    provided = _extract_request_token(request)
+    # 定时比较，避免通过响应时间逐字节猜令牌
+    if not provided or not secrets.compare_digest(provided, token):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "鉴权失败：请在「设置」页填写后端令牌（DM_AUTH_TOKEN）"},
+        )
+    return await call_next(request)
 
 
 # ==========================================
@@ -158,7 +219,9 @@ async def root():
         "system": "个人决策支持系统",
         "version": "0.2.0",
         "phase": "Phase 1.2 - DeepSeek版",
-        "features": ["元认知调度器（快慢回路分离）", "量化分析Agent（AI版）", "风险监控Agent（AI版）"]
+        "features": ["元认知调度器（快慢回路分离）", "量化分析Agent（AI版）", "风险监控Agent（AI版）"],
+        # 前端据此判断是否需要提示填写令牌（该端点本身不要求鉴权）
+        "auth_required": bool(auth_token()),
     }
 
 

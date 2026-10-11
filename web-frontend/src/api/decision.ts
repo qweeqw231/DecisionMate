@@ -22,6 +22,8 @@ export interface RootStatus {
   version: string
   phase: string
   features: string[]
+  /** 后端是否启用了令牌鉴权（.env 里的 DM_AUTH_TOKEN） */
+  auth_required?: boolean
 }
 export const getRootStatus = () => get<RootStatus>('/api/health')
 

@@ -12,6 +12,12 @@ function base(): string {
   return useSettingsStore().apiBase
 }
 
+/** 后端启用鉴权时（.env 里设置了 DM_AUTH_TOKEN），随请求带上令牌 */
+function authHeaders(): Record<string, string> {
+  const token = useSettingsStore().authToken.trim()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -23,6 +29,7 @@ export async function request<T>(
       ...options,
       headers: {
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...authHeaders(),
         ...(options.headers || {}),
       },
     })
@@ -39,6 +46,10 @@ export async function request<T>(
   }
 
   if (!res.ok) {
+    if (res.status === 401) {
+      const detail = data?.detail || '鉴权失败'
+      throw new ApiError(401, `${detail}（后端已启用鉴权，请在「设置」页填写访问令牌）`)
+    }
     const detail = data?.detail || text || `HTTP ${res.status}`
     throw new ApiError(res.status, typeof detail === 'string' ? detail : JSON.stringify(detail))
   }

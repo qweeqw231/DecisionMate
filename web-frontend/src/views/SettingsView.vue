@@ -44,6 +44,36 @@
 
       <el-card shadow="never" class="setting-card">
         <template #header>
+          <span class="card-title">访问令牌（可选）</span>
+        </template>
+        <div class="field-desc">
+          后端默认不鉴权（仅本机/局域网自用）。若在共享局域网里使用，可在后端的
+          <code>.env</code> 中设置 <code>DM_AUTH_TOKEN=&lt;一串随机字符&gt;</code> 并重启，
+          然后在这里填入同一串字符。令牌只存在本机浏览器 localStorage，随请求头发送。
+        </div>
+        <el-input
+          v-model="tokenDraft"
+          type="password"
+          show-password
+          clearable
+          placeholder="留空 = 后端未启用鉴权"
+          class="url-input"
+        />
+        <div class="url-actions">
+          <el-button type="primary" @click="saveToken">保存令牌</el-button>
+          <el-button @click="clearToken">清除</el-button>
+        </div>
+        <el-alert
+          v-if="authRequiredHint && !settingsStore.authToken"
+          type="warning"
+          :closable="false"
+          class="test-alert"
+          title="后端已启用鉴权，但本机尚未填写令牌——数据接口会返回 401。"
+        />
+      </el-card>
+
+      <el-card shadow="never" class="setting-card">
+        <template #header>
           <span class="card-title">数据管理</span>
         </template>
         <div class="field-desc">清空所有对话及决策记录（分身配置会保留），此操作不可恢复。</div>
@@ -157,6 +187,22 @@ const testResult = ref<'' | 'ok' | 'fail'>('')
 const testError = ref('')
 const statusInfo = ref<RootStatus | null>(null)
 
+// ---------- 访问令牌 ----------
+const tokenDraft = ref(settingsStore.authToken)
+const authRequiredHint = ref(false)
+
+function saveToken() {
+  settingsStore.setAuthToken(tokenDraft.value)
+  tokenDraft.value = settingsStore.authToken
+  ElMessage.success(settingsStore.authToken ? '令牌已保存' : '令牌已清空')
+}
+
+function clearToken() {
+  tokenDraft.value = ''
+  settingsStore.setAuthToken('')
+  ElMessage.success('令牌已清空')
+}
+
 // ---------- 关系边界配置 ----------
 const boundaryMeta = ref<BoundaryConfigMeta | null>(null)
 const boundaryDraft = ref<BoundaryConfig>({
@@ -246,6 +292,7 @@ async function testConnection() {
   testResult.value = ''
   try {
     statusInfo.value = await getRootStatus()
+    authRequiredHint.value = !!statusInfo.value?.auth_required
     testResult.value = 'ok'
   } catch (e) {
     testResult.value = 'fail'
