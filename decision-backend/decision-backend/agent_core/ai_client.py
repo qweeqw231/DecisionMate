@@ -27,7 +27,8 @@ def get_client() -> OpenAI:
             raise ValueError(
                 "未找到 DEEPSEEK_API_KEY。\n"
                 "请确保项目根目录下有 .env 文件，且其中包含：\n"
-                "DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                "DEEPSEEK_API_KEY=sk-<你的密钥>\n"
+                "（可参考 .env.example）"
             )
         _client = OpenAI(
             api_key=api_key,

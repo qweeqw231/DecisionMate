@@ -1,0 +1,99 @@
+name: CI
+
+# P2 新增：项目此前没有任何 CI，回归全靠手动跑 run_tests.py。
+# 这里把后端测试与前端类型检查/构建都固定下来。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend-tests:
+    name: 后端回归测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: decision-backend/decision-backend/requirements.txt
+
+      - name: 安装依赖
+        working-directory: decision-backend/decision-backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行测试
+        working-directory: decision-backend/decision-backend
+        # 测试全部跑在系统临时目录，不需要真实 .env、不访问网络
+        # （所有大模型调用在测试里都被替换为确定性桩）。
+        run: python run_tests.py
+
+  frontend-build:
+    name: 前端类型检查与构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web-frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: web-frontend
+        run: npm ci
+
+      - name: 类型检查
+        working-directory: web-frontend
+        # package.json 的 build 脚本只跑 vite，不带类型检查，因此单独跑一次
+        run: npx vue-tsc --noEmit -p tsconfig.json
+
+      - name: 构建
+        working-directory: web-frontend
+        run: npm run build
+
+  repo-hygiene:
+    name: 仓库卫生
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 确认密钥与运行时数据没有进版本库
+        run: |
+          set -e
+          fail=0
+          for pattern in '.env' '*.db' 'chroma.sqlite3' 'node_modules/' '.venv/'; do
+            if [ "$pattern" = ".env" ]; then
+              # .env.example 允许存在，真正的 .env 不允许
+              hits=$(git ls-files | grep -E '(^|/)\.env$' || true)
+            else
+              hits=$(git ls-files | grep -E "$pattern" | grep -v '\.env\.example' || true)
+            fi
+            if [ -n "$hits" ]; then
+              echo "::error::被忽略的文件进了版本库（$pattern）："
+              echo "$hits"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: 确认没有把密钥写进代码
+        run: |
+          # 排除明显的占位符（xxx…、your-key、示例标记），否则会把报错提示里的
+          # 示例字符串误判成真实密钥。
+          matches=$(git grep -nI -E 'sk-[A-Za-z0-9]{20,}' -- . ':(exclude)*.example' ':(exclude)*.md' \
+                    | grep -v -E 'x{8,}|X{8,}|0{8,}|your|YOUR|placeholder|example' || true)
+          if [ -n "$matches" ]; then
+            echo "::error::疑似真实 API Key 出现在代码里"
+            echo "$matches"
+            exit 1
+          fi
+          echo "未发现疑似密钥"

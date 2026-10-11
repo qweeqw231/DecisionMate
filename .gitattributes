@@ -1,0 +1,27 @@
+# P2 新增：统一换行符，消除「LF will be replaced by CRLF」这类噪音警告，
+# 并避免同一份文件在不同平台被反复标记为已修改。
+#
+# 约定：仓库内一律存 LF，检出时由 Git 按平台处理。
+* text=auto eol=lf
+
+# Windows 专用脚本保持 CRLF，避免 .cmd 在部分环境下解析异常
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制文件不做换行符转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.db binary
+*.bin binary
+*.woff binary
+*.woff2 binary
+
+# 锁文件与构建产物在 diff 中不展开
+package-lock.json -diff linguist-generated
+oh-package-lock.json5 -diff linguist-generated

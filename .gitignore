@@ -12,6 +12,11 @@ __pycache__/
 *.db-*
 chroma_db/
 test-harness/runtime/
+# 运维脚本生成的备份（chroma.sqlite3.bak-* / chroma_db.bak-*）
+*.bak-*
+chroma_db.bak-*
+*.sqlite3-wal
+*.sqlite3-shm
 
 # 前端构建产物与依赖
 node_modules/
@@ -23,6 +28,9 @@ decision-backend/decision-backend/static/
 **/build/
 **/.hvigor/
 **/.preview/
+
+# 本地分析与验证脚本的临时产物（文档抽取、探针、截图、E2E 脚本）
+.analysis/
 
 # IDE / 工具
 .vscode/
