@@ -66,34 +66,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 确认密钥与运行时数据没有进版本库
-        run: |
-          set -e
-          fail=0
-          for pattern in '.env' '*.db' 'chroma.sqlite3' 'node_modules/' '.venv/'; do
-            if [ "$pattern" = ".env" ]; then
-              # .env.example 允许存在，真正的 .env 不允许
-              hits=$(git ls-files | grep -E '(^|/)\.env$' || true)
-            else
-              hits=$(git ls-files | grep -E "$pattern" | grep -v '\.env\.example' || true)
-            fi
-            if [ -n "$hits" ]; then
-              echo "::error::被忽略的文件进了版本库（$pattern）："
-              echo "$hits"
-              fail=1
-            fi
-          done
-          exit $fail
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: 确认没有把密钥写进代码
-        run: |
-          # 排除明显的占位符（xxx…、your-key、示例标记），否则会把报错提示里的
-          # 示例字符串误判成真实密钥。
-          matches=$(git grep -nI -E 'sk-[A-Za-z0-9]{20,}' -- . ':(exclude)*.example' ':(exclude)*.md' \
-                    | grep -v -E 'x{8,}|X{8,}|0{8,}|your|YOUR|placeholder|example' || true)
-          if [ -n "$matches" ]; then
-            echo "::error::疑似真实 API Key 出现在代码里"
-            echo "$matches"
-            exit 1
-          fi
-          echo "未发现疑似密钥"
+      # 检查逻辑放在脚本里（scripts/check_repo_hygiene.py）而不是内联 shell：
+      # 最初写成 grep -E 匹配路径时把 glob `*.db` 当成了正则，
+      # GNU grep 忽略前导 * 后等价于 `.db`，把 FeedbackBar.vue 误判成数据库文件。
+      # 该脚本有单元测试覆盖（tests/test_repo_hygiene.py）。
+      - name: 密钥与运行时数据没有进版本库
+        run: python scripts/check_repo_hygiene.py
